@@ -1,0 +1,675 @@
+.appShell {
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* Desktop: keep the map height tied to the viewport so the map (and its controls) aren’t pushed off-screen by a tall sidebar. */
+@media (min-width: 901px) {
+  .appShell {
+    height: 100svh;
+    max-height: 100svh;
+    overflow: hidden;
+  }
+}
+
+.topBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.brandTitle {
+  font-family: var(--heading);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.brandSubtitle {
+  font-size: 12px;
+  color: var(--text);
+  margin-top: 2px;
+  max-width: 980px;
+}
+
+.main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(300px, 400px) 1fr;
+  min-height: 0;
+}
+
+@media (min-width: 901px) {
+  .main {
+    overflow: hidden;
+  }
+}
+
+.leftPanel {
+  border-right: 1px solid var(--border);
+  padding: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.leftPanelScroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px 14px 20px;
+}
+
+.uploadFooterInScroll {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.uploadFooterTitle {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.uploadFooterMeta {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text);
+}
+
+.panelHeader {
+  font-family: var(--heading);
+  color: var(--text-h);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.filterBlockTitle {
+  font-family: var(--heading);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-h);
+  line-height: 1.35;
+  margin: 0 0 6px;
+}
+
+.basemapBlock {
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.locationBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.locationBlockError {
+  font-size: 12px;
+  color: #b91c1c;
+  margin: 0;
+  line-height: 1.35;
+}
+
+.locationBlockHint {
+  font-size: 11px;
+  color: var(--text);
+  margin: 0 0 2px;
+  line-height: 1.35;
+  opacity: 0.9;
+}
+
+.locationCombobox {
+  position: relative;
+  min-width: 0;
+}
+
+.locationComboboxLabel {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.locationComboboxWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.locationComboboxInput {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 12px;
+  padding: 7px 28px 7px 0;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-h);
+  outline: none;
+}
+
+.locationComboboxInput:focus {
+  border-bottom-color: var(--accent-border);
+}
+
+.locationComboboxInput:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.locationComboboxClear {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.locationComboboxClear:hover {
+  background: var(--accent-bg);
+  color: var(--text-h);
+}
+
+.locationComboboxList {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  max-height: min(52vh, 320px);
+  overflow-y: auto;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.locationComboboxOption {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-h);
+  cursor: pointer;
+}
+
+.locationComboboxOption:hover,
+.locationComboboxOption:focus-visible {
+  background: var(--accent-bg);
+  outline: none;
+}
+
+.locationComboboxOptionActive {
+  background: var(--accent-bg);
+}
+
+.filterSection {
+  margin-bottom: 10px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.filterSection:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.filterSectionHeader {
+  font-size: 13px;
+  line-height: 1.35;
+  margin-bottom: 6px;
+}
+
+.filterSectionBody {
+  padding-top: 2px;
+}
+
+.filterTitleBold {
+  font-family: var(--heading);
+  font-weight: 700;
+  color: var(--text-h);
+}
+
+.filterTitleRest {
+  font-weight: 400;
+  color: var(--text);
+}
+
+.measureRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: start;
+  margin-bottom: 6px;
+}
+
+.measureRow .switchLabelInlineRight {
+  margin-top: 1px;
+}
+
+.switchTrackWrapUnavailable .switchTrack {
+  background: var(--border);
+}
+
+.switchUnavailableDiagonal {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.switchLabelDisabled {
+  cursor: not-allowed;
+}
+
+.switchLabelDisabled .switchInput {
+  cursor: not-allowed;
+}
+
+.measureRow:last-child {
+  margin-bottom: 0;
+}
+
+.measureRowBody {
+  min-width: 0;
+}
+
+.fieldInMeasureRow {
+  margin-bottom: 0;
+}
+
+.measureRowLabelOnly {
+  font-size: 12px;
+  line-height: 1.35;
+  padding: 2px 0;
+  min-width: 0;
+}
+
+.switchLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+  user-select: none;
+  position: relative;
+}
+
+.switchLabelInlineRight {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  align-self: center;
+  padding-left: 4px;
+}
+
+.switchTrackWrap {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+.switchInput {
+  position: absolute;
+  inset: 0;
+  width: 40px;
+  height: 22px;
+  margin: 0;
+  opacity: 0.001;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.switchTrack {
+  position: absolute;
+  inset: 0;
+  border-radius: 11px;
+  background: var(--border);
+  transition: background 0.2s ease;
+  pointer-events: none;
+}
+
+.switchInput:checked + .switchTrack {
+  background: color-mix(in oklab, var(--accent) 55%, var(--border));
+}
+
+.switchThumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--bg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: transform 0.2s ease;
+  pointer-events: none;
+}
+
+.switchInput:focus-visible + .switchTrack {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.switchInput:checked + .switchTrack .switchThumb {
+  transform: translateX(18px);
+}
+
+.switchText {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text);
+  min-width: 22px;
+}
+
+.filterSectionTitle {
+  font-family: var(--heading);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-h);
+  margin: 0 0 8px;
+  letter-spacing: 0.02em;
+}
+
+.importSheetSummary {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  background: transparent;
+}
+
+.importSheetSummaryTitle {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.importSheetSummaryList {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-h);
+}
+
+.importSheetSummaryList li {
+  margin-bottom: 4px;
+}
+
+/* One line per sheet/tab — flows with the main sidebar scroll (no inner scroll). */
+.importSheetSummaryLines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-h);
+}
+
+.importSheetSummaryLines li {
+  margin: 0 0 6px;
+}
+
+.importSheetSummaryLines li:last-child {
+  margin-bottom: 0;
+}
+
+.importSheetSummaryLine {
+  display: block;
+}
+
+.importSheetSummaryTab {
+  font-weight: 700;
+  color: var(--text-h);
+}
+
+.importSheetSummaryMeta {
+  font-weight: 400;
+  color: var(--text);
+}
+
+.uploadInput {
+  width: 100%;
+}
+
+.uploadError {
+  margin: 10px 0 0;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, #D64545 55%, var(--border));
+  background: color-mix(in oklab, #D64545 10%, var(--bg));
+  color: var(--text-h);
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+  text-align: left;
+}
+
+.fieldLabel {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.fieldLabelBold {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-h);
+}
+
+.fieldLabelRest {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text);
+}
+
+.uploadFooter .uploadError {
+  margin-top: 8px;
+}
+
+.uploadDetailList {
+  margin: 10px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--border);
+  background: transparent;
+}
+
+.uploadDetailListTitle {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text);
+  margin: 0 0 6px;
+}
+
+.uploadDetailUl {
+  margin: 0;
+  padding-left: 16px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-h);
+}
+
+.uploadDetailUl li {
+  margin-bottom: 3px;
+}
+
+.uploadFilterHint {
+  margin: 10px 0 0;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, #b45309 45%, var(--border));
+  background: color-mix(in oklab, #b45309 12%, var(--bg));
+  color: var(--text-h);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.informationTableBlock {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.informationTableTitle {
+  font-family: var(--heading);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-h);
+  margin: 0 0 6px;
+}
+
+.informationTableMeta {
+  font-size: 11px;
+  color: var(--text);
+  margin: 0 0 8px;
+  line-height: 1.4;
+}
+
+.informationTableMetaSpaced {
+  margin-top: 14px;
+}
+
+.informationTableEmpty {
+  font-size: 12px;
+  color: var(--text);
+  margin: 0;
+  line-height: 1.45;
+}
+
+/* Information block: plain lines, same scroll as the rest of the sidebar. */
+.informationSummaryLines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-h);
+}
+
+.informationSummaryLines li {
+  margin: 0 0 8px;
+}
+
+.informationSummaryLines li:last-child {
+  margin-bottom: 0;
+}
+
+.informationCountyTotals {
+  margin: 6px 0 0;
+  padding-left: 1.1rem;
+  list-style: disc;
+  font-size: 11px;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.informationCountyTotals li {
+  margin: 0 0 2px;
+}
+
+.importSheetSummaryListCompact li {
+  margin-bottom: 2px;
+}
+
+.sheetPickerField {
+  margin-top: 10px;
+}
+
+.sheetSelect {
+  cursor: pointer;
+}
+
+.fieldInput {
+  font: inherit;
+  padding: 10px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+  outline: none;
+}
+
+.fieldInput:focus {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+.fieldInput:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.placeholder {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.45;
+  padding: 10px 10px;
+  border-radius: 10px;
+  border: 1px dashed var(--border);
+}
+
+.mapPanel {
+  min-height: 0;
+  position: relative;
+  height: 100%;
+}
+
+@media (max-width: 900px) {
+  .main {
+    grid-template-columns: 1fr;
+  }
+
+  .leftPanel {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+}
+

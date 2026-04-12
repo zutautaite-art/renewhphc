@@ -1,0 +1,50 @@
+[
+  {
+    "key": "age_35_44",
+    "group": "Persona",
+    "label": "Age 35\u201344",
+    "kind": "small_area_metric",
+    "map_field": "age_35_44_pct",
+    "unit": "%"
+  },
+  {
+    "key": "education_degree_plus",
+    "group": "Persona",
+    "label": "Education level",
+    "kind": "small_area_metric",
+    "map_field": "degree_plus_pct",
+    "unit": "%"
+  },
+  {
+    "key": "high_income_profile",
+    "group": "Persona",
+    "label": "Income (high income only)",
+    "kind": "small_area_metric",
+    "map_field": "high_income_pct",
+    "unit": "%"
+  },
+  {
+    "key": "renewables_installed",
+    "group": "Renewables",
+    "label": "Renewables installed",
+    "kind": "small_area_metric",
+    "map_field": "renewables_pct",
+    "unit": "%"
+  },
+  {
+    "key": "electric_heating",
+    "group": "Renewables",
+    "label": "Electric heating",
+    "kind": "small_area_metric",
+    "map_field": "electric_pct",
+    "unit": "%"
+  },
+  {
+    "key": "heat_pumps",
+    "group": "Renewables",
+    "label": "Heat pumps",
+    "kind": "small_area_metric",
+    "map_field": "heat_pump_pct",
+    "unit": "%"
+  }
+]
