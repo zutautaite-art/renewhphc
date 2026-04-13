@@ -1,10 +1,10 @@
 
 import './App.css'
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import * as XLSX from 'xlsx'
 import type { FeatureCollection } from 'geojson'
 import { FilterSection } from './components/FilterSection'
-import { InformationTable, type SelectedSmallAreaPanel } from './components/InformationTable'
+import { InformationTable } from './components/InformationTable'
 import { LocationCombobox } from './components/LocationCombobox'
 import { MapView, type ActiveMetric } from './components/MapView'
 import { MeasureRow } from './components/MeasureRow'
@@ -12,82 +12,30 @@ import type { BasemapMode } from './basemap'
 import { fetchCsoCountyAndBuaGeoJson } from './cso/boundaryData'
 import type { LocalAuthorityRow } from './cso/geohivePlaces'
 import { linkBuaToLocalAuthorities, type LinkedTownOption } from './buaLaLink'
+import type { HouseholdRecord } from './types/households'
 import { parseWorkbookData, type ParsedWorkbookData, type FilterConfigRow } from './workbookData'
 
 const EMPTY_FC: FeatureCollection = { type: 'FeatureCollection', features: [] }
 type MetricToggleState = Record<string, boolean>
 
-/** Matches `safe_metric_prop` in scripts/build_sa_geojson.py. */
-function metricGeoJsonPropertyName(metricKey: string): string {
-  const safe = metricKey.trim().replace(/[^a-zA-Z0-9_]+/g, '_').replace(/^_|_$/g, '') || 'metric'
-  return `m_${safe}`
-}
-
-type StaticFilterManifestEntry = {
-  key: string
-  group: string
-  label: string
-  kind?: string
-  map_field?: string
-  unit?: string
-}
-
-function manifestEntryToFilterRow(e: StaticFilterManifestEntry): FilterConfigRow {
-  const kindRaw = String(e.kind ?? 'small_area_metric').toLowerCase()
-  const kind: FilterConfigRow['kind'] =
-    kindRaw === 'town_metric' ? 'town_metric' : kindRaw === 'household_boolean' ? 'household_boolean' : 'small_area_metric'
-  const key = String(e.key ?? '').trim()
-  /** Labels come from generated `filters.json` only; fall back to `key` from the same file (never invented here). */
-  const label = String(e.label ?? '').trim() || key
-  return {
-    group: String(e.group ?? '').trim() || 'Metrics',
-    key,
-    label,
-    kind,
-    mapField: e.map_field ? String(e.map_field) : undefined,
-    status: '',
-  }
-}
-
-function formatSaMetricCell(n: number, unit?: string): string {
-  const s = n.toLocaleString(undefined, { maximumFractionDigits: 4 })
-  return unit ? `${s} ${unit}`.trim() : s
-}
-
-function computeMetricAvailability(fc: FeatureCollection, keys: string[]): Record<string, boolean> {
-  const out: Record<string, boolean> = {}
-  for (const k of keys) out[k] = false
-  for (const f of fc.features ?? []) {
-    const p = (f.properties as Record<string, unknown> | null) ?? {}
-    for (const k of keys) {
-      if (out[k]) continue
-      const v = p[metricGeoJsonPropertyName(k)]
-      const n = typeof v === 'number' ? v : Number(v)
-      if (Number.isFinite(n)) out[k] = true
-    }
-  }
-  return out
-}
-
-function computeMetricValueCounts(fc: FeatureCollection, keys: string[]): Record<string, number> {
-  const out: Record<string, number> = {}
-  for (const k of keys) out[k] = 0
-  for (const f of fc.features ?? []) {
-    const p = (f.properties as Record<string, unknown> | null) ?? {}
-    for (const k of keys) {
-      const v = p[metricGeoJsonPropertyName(k)]
-      const n = typeof v === 'number' ? v : Number(v)
-      if (Number.isFinite(n)) out[k] += 1
-    }
-  }
-  return out
-}
+/** Default sidebar labels when no workbook is loaded; upload replaces with `filterConfig` from the file. */
+const DEFAULT_FILTER_CONFIG: FilterConfigRow[] = [
+  { group: 'Persona', key: 'age_35_44', label: 'Age 35–44', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'age_35_44_no', mapField: 'age_35_44_no' },
+  { group: 'Persona', key: 'families_children', label: 'Families with Children', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'couple_children_no', mapField: 'couple_children_no' },
+  { group: 'Persona', key: 'education_degree_plus', label: 'Education (Bachelors+)', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'degree_plus_no', mapField: 'degree_plus_no' },
+  { group: 'Persona', key: 'income_profile', label: 'Income', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'income_no', mapField: 'income_no' },
+  { group: 'Persona', key: 'phobal_score', label: 'Phobal', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'phobal_score', mapField: 'phobal_score' },
+  { group: 'Persona', key: 'occupation_manager_professional', label: 'Occupation (Managers & Professionals)', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'manager_professional_no', mapField: 'manager_professional_no' },
+  { group: 'Metrics', key: 'electric_heating', label: 'Electric Heating', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'electric_no', mapField: 'electric_no' },
+  { group: 'Metrics', key: 'solar_panels', label: 'Solar', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'solar_no', mapField: 'solar_no' },
+  { group: 'Metrics', key: 'ev_households', label: 'EV Households', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'ev_households_no', mapField: 'ev_households_no' },
+  { group: 'Metrics', key: 'heat_pumps', label: 'Heat Pumps', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'heat_pump_no', mapField: 'heat_pump_no' },
+]
 
 function isUsableMetricFilter(row: FilterConfigRow): boolean {
   if (row.kind === 'household_boolean') return false
   const status = String(row.status ?? '').trim().toLowerCase()
-  if (status.startsWith('no clean source')) return false
-  if (status.startsWith('no ')) return false
+  if (status && status !== 'use') return false
   return true
 }
 
@@ -102,6 +50,7 @@ export default function App() {
   const [selectedTownCode, setSelectedTownCode] = useState('')
   const [selectedCountyLa, setSelectedCountyLa] = useState('')
   const [householdsLayerOn, setHouseholdsLayerOn] = useState(true)
+  const [evCommercialLayerOn, setEvCommercialLayerOn] = useState(true)
   const [boundaryCountyLinesOn, setBoundaryCountyLinesOn] = useState(true)
   const [boundaryTownLinesOn, setBoundaryTownLinesOn] = useState(true)
   const [boundarySmallAreaLinesOn, setBoundarySmallAreaLinesOn] = useState(true)
@@ -112,67 +61,35 @@ export default function App() {
   const [importSummary, setImportSummary] = useState<{ sheetName: string; rowsImported: number; detail: string }[] | null>(null)
   const [loadedFileName, setLoadedFileName] = useState<string | null>(null)
   const [activeMetricKeys, setActiveMetricKeys] = useState<MetricToggleState>({})
+  const [geoJsonReady, setGeoJsonReady] = useState(false)
+  const [statsReadyAt, setStatsReadyAt] = useState(0)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
-  const [staticFilterManifest, setStaticFilterManifest] = useState<StaticFilterManifestEntry[] | null>(null)
-  const [staticSaGeoJson, setStaticSaGeoJson] = useState<FeatureCollection | null>(null)
-  const [staticAssetsLoading, setStaticAssetsLoading] = useState(true)
-  const [staticAssetsError, setStaticAssetsError] = useState<string | null>(null)
-  const [metricUnitsByKey, setMetricUnitsByKey] = useState<Record<string, string | undefined>>({})
-  const staticFiltersInitializedRef = useRef(false)
-  const [selectedSaProps, setSelectedSaProps] = useState<Record<string, unknown> | null>(null)
-
-  const onSmallAreaSelect = useCallback((props: Record<string, unknown> | null) => {
-    setSelectedSaProps(props)
-  }, [])
+  const hasWorkbookMetrics = useMemo(
+    () => !!(loadedData && Object.keys(loadedData.metricsByKey).length > 0),
+    [loadedData],
+  )
 
   useEffect(() => {
-    let alive = true
-    setStaticAssetsLoading(true)
-    setStaticAssetsError(null)
-    void Promise.all([
-      fetch('/small_areas_metrics.filters.json').then((r) => {
-        if (!r.ok) throw new Error(`filters.json HTTP ${r.status}`)
-        return r.json() as Promise<unknown>
-      }),
-      fetch('/small_areas_metrics.geojson').then((r) => {
-        if (!r.ok) throw new Error(`geojson HTTP ${r.status}`)
-        return r.json() as Promise<FeatureCollection>
-      }),
-    ])
-      .then(([filterJson, fc]) => {
-        if (!alive) return
-        if (!fc || fc.type !== 'FeatureCollection' || !Array.isArray(fc.features)) {
-          throw new Error('small_areas_metrics.geojson is not a FeatureCollection')
-        }
-        const rawList = Array.isArray(filterJson) ? filterJson : []
-        const manifest = rawList.filter((x): x is StaticFilterManifestEntry => {
-          if (!x || typeof x !== 'object') return false
-          const o = x as StaticFilterManifestEntry
-          if (typeof o.key !== 'string' || !String(o.key).trim()) return false
-          if (typeof o.group !== 'string' || !String(o.group).trim()) return false
-          const kind = String(o.kind ?? 'small_area_metric').toLowerCase()
-          return kind === 'small_area_metric' || kind === 'town_metric'
+    try {
+      const hhRaw = sessionStorage.getItem('hh_points')
+      const evRaw = sessionStorage.getItem('ev_points')
+      const fname = sessionStorage.getItem('hh_filename')
+      if (hhRaw && evRaw && fname) {
+        const hh = JSON.parse(hhRaw) as HouseholdRecord[]
+        const ev = JSON.parse(evRaw) as HouseholdRecord[]
+        setLoadedData((prev) => prev ?? {
+          households: hh,
+          evCommercial: ev,
+          metricsByKey: {},
+          filterConfig: [],
+          importSummary: [],
+          warnings: [],
         })
-        setStaticSaGeoJson(fc)
-        setStaticFilterManifest(manifest)
-        const units: Record<string, string | undefined> = {}
-        for (const e of manifest) units[e.key] = e.unit
-        setMetricUnitsByKey(units)
-      })
-      .catch((err) => {
-        if (!alive) return
-        console.warn('Static SA assets not loaded; falling back to workbook filters if available.', err)
-        setStaticAssetsError(err instanceof Error ? err.message : String(err))
-        setStaticFilterManifest(null)
-        setStaticSaGeoJson(null)
-        setMetricUnitsByKey({})
-      })
-      .finally(() => {
-        if (alive) setStaticAssetsLoading(false)
-      })
-    return () => {
-      alive = false
+        setLoadedFileName((prev) => prev ?? fname)
+      }
+    } catch {
+      /* ignore */
     }
   }, [])
 
@@ -205,24 +122,13 @@ export default function App() {
 
   const countyOptions = useMemo(() => laRows.map((r) => ({ value: r.localAuthority, label: r.localAuthority })), [laRows])
 
-  const metricFilters = useMemo(() => {
-    if (staticFilterManifest?.length) {
-      return staticFilterManifest.map(manifestEntryToFilterRow).filter((f) => f.kind === 'small_area_metric' || f.kind === 'town_metric')
-    }
-    return (loadedData?.filterConfig ?? []).filter((f) => isUsableMetricFilter(f))
-  }, [staticFilterManifest, loadedData])
+  const effectiveFilterConfig =
+    loadedData?.filterConfig?.length ? loadedData.filterConfig : DEFAULT_FILTER_CONFIG
 
-  const staticMetricKeys = useMemo(() => metricFilters.map((f) => f.key).filter(Boolean), [metricFilters])
-
-  const metricDataAvailability = useMemo(() => {
-    if (staticSaGeoJson && staticFilterManifest?.length) return computeMetricAvailability(staticSaGeoJson, staticMetricKeys)
-    return null as Record<string, boolean> | null
-  }, [staticSaGeoJson, staticFilterManifest, staticMetricKeys])
-
-  const metricValueCounts = useMemo(() => {
-    if (staticSaGeoJson && staticFilterManifest?.length) return computeMetricValueCounts(staticSaGeoJson, staticMetricKeys)
-    return null as Record<string, number> | null
-  }, [staticSaGeoJson, staticFilterManifest, staticMetricKeys])
+  const metricFilters = useMemo(
+    () => effectiveFilterConfig.filter((f) => isUsableMetricFilter(f) && (f.kind === 'small_area_metric' || f.kind === 'town_metric')),
+    [effectiveFilterConfig],
+  )
 
   const groupedFilters = useMemo(() => {
     const out: Record<string, FilterConfigRow[]> = {}
@@ -230,21 +136,10 @@ export default function App() {
     return out
   }, [metricFilters])
 
-  useEffect(() => {
-    if (!staticFilterManifest?.length || !staticSaGeoJson || staticFiltersInitializedRef.current) return
-    staticFiltersInitializedRef.current = true
-    const avail = computeMetricAvailability(staticSaGeoJson, staticMetricKeys)
-    setActiveMetricKeys((prev) => {
-      const next = { ...prev }
-      for (const f of metricFilters) {
-        if (!f.key || f.kind === 'household_boolean') continue
-        next[f.key] = !!avail[f.key]
-      }
-      return next
-    })
-  }, [staticFilterManifest, staticSaGeoJson, staticMetricKeys, metricFilters])
+  const filtersReady = geoJsonReady || !!loadedData
 
   const households = useMemo(() => loadedData?.households ?? [], [loadedData])
+  const evCommercial = useMemo(() => loadedData?.evCommercial ?? [], [loadedData])
 
   const activeMetrics = useMemo<ActiveMetric[]>(() => {
     return metricFilters
@@ -256,30 +151,13 @@ export default function App() {
           key: f.key,
           label: f.label,
           geography,
-          unit: metricUnitsByKey[f.key] ?? fromWorkbook?.unit,
+          unit: fromWorkbook?.unit,
           values: fromWorkbook?.values ?? {},
         }
       })
-  }, [loadedData, metricFilters, activeMetricKeys, metricUnitsByKey])
-
-  const selectedSmallAreaPanel = useMemo((): SelectedSmallAreaPanel | null => {
-    if (!selectedSaProps) return null
-    const code = String(selectedSaProps.GEOGID ?? '').trim()
-    const name = String(selectedSaProps.GEOGDESC ?? '').trim()
-    const activeMetricRows = activeMetrics
-      .filter((m) => m.geography === 'small_area')
-      .map((m) => {
-        const prop = metricGeoJsonPropertyName(m.key)
-        const raw = selectedSaProps[prop]
-        const n = typeof raw === 'number' ? raw : Number(raw)
-        const has = Number.isFinite(n)
-        return {
-          label: m.label,
-          valueDisplay: has ? formatSaMetricCell(n, m.unit) : '—',
-        }
-      })
-    return { name, code, activeMetricRows }
-  }, [selectedSaProps, activeMetrics])
+  // statsReadyAt: GeoJSON stats can arrive after toggles; bump forces new `activeMetrics` reference for MapView
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional bump when MapView stats are ready
+  }, [loadedData, metricFilters, activeMetricKeys, statsReadyAt])
 
   useEffect(() => {
     // Lightweight debugging hook for DevTools: lets you inspect what the app is using after upload.
@@ -287,11 +165,8 @@ export default function App() {
     ;(window as unknown as Record<string, unknown>).__households = households
   }, [activeMetrics, households])
 
-  const householdFilterAvailable = households.length > 0
-  const metricAvailable = (key: string) => {
-    if (metricDataAvailability) return !!metricDataAvailability[key]
-    return !!loadedData?.metricsByKey[key]
-  }
+  const householdFilterAvailable = loadedData ? households.length > 0 : undefined
+  const metricAvailable = (_key: string) => filtersReady
 
   function setMetric(key: string, on: boolean) {
     setActiveMetricKeys((prev) => ({ ...prev, [key]: on }))
@@ -299,23 +174,25 @@ export default function App() {
 
   async function handleWorkbook(file: File) {
     try {
+      sessionStorage.removeItem('hh_points')
+      sessionStorage.removeItem('ev_points')
+      sessionStorage.removeItem('hh_filename')
+
       const buffer = await file.arrayBuffer()
       const wb = XLSX.read(buffer, { type: 'array' })
       const parsed = parseWorkbookData(wb)
-      setSelectedSaProps(null)
       setLoadedData(parsed)
       setImportSummary(parsed.importSummary)
       setUploadDetailLines(parsed.warnings)
       setUploadError(null)
       setLoadedFileName(file.name)
 
-      if (!staticFilterManifest?.length) {
-        const next: MetricToggleState = {}
-        for (const row of parsed.filterConfig) {
-          if (!isUsableMetricFilter(row)) continue
-          next[row.key] = !!parsed.metricsByKey[row.key]
-        }
-        setActiveMetricKeys(next)
+      try {
+        sessionStorage.setItem('hh_points', JSON.stringify(parsed.households))
+        sessionStorage.setItem('ev_points', JSON.stringify(parsed.evCommercial ?? []))
+        sessionStorage.setItem('hh_filename', file.name)
+      } catch {
+        /* ignore storage errors */
       }
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Failed to read workbook')
@@ -353,12 +230,6 @@ export default function App() {
         <aside className="leftPanel">
           <div className="leftPanelScroll">
             <div className="panelHeader">Filters</div>
-            {staticAssetsError ? (
-              <p className="locationBlockError" role="status">
-                Small-area bundle not loaded ({staticAssetsError}). Place <code>public/small_areas_metrics.geojson</code> and{' '}
-                <code>public/small_areas_metrics.filters.json</code> (run <code>scripts/build_sa_geojson.py</code>).
-              </p>
-            ) : null}
 
             <section className="basemapBlock">
               <div className="filterBlockTitle">Basemap</div>
@@ -391,31 +262,111 @@ export default function App() {
               {placesError ? <p className="locationBlockError">{placesError}</p> : null}
             </section>
 
-            <FilterSection sectionId="household" titleBold="Household">
+            <FilterSection sectionId="customers" titleBold="Customers:">
               <MeasureRow switchId="households-layer" dataOn={householdsLayerOn} onDataOnChange={setHouseholdsLayerOn} dataAvailable={householdFilterAvailable}>
-                <div className="measureRowLabelOnly"><strong>Identified Potential Customer</strong></div>
+                <strong>Households</strong>
+              </MeasureRow>
+              <MeasureRow
+                switchId="ev-commercial-layer"
+                dataOn={evCommercialLayerOn}
+                onDataOnChange={setEvCommercialLayerOn}
+                dataAvailable={loadedData ? (loadedData.evCommercial?.length ?? 0) > 0 : undefined}
+              >
+                <strong>EV Commercial</strong>
               </MeasureRow>
             </FilterSection>
 
+            <section className="basemapBlock">
+              <div className="filterBlockTitle">Filter actions</div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                <button
+                  type="button"
+                  className="filterActionBtn"
+                  disabled={!filtersReady}
+                  style={{ opacity: filtersReady ? 1 : 0.45, cursor: filtersReady ? 'pointer' : 'not-allowed' }}
+                  onClick={() => {
+                    const next: MetricToggleState = {}
+                    if (hasWorkbookMetrics && loadedData) {
+                      for (const row of metricFilters) {
+                        next[row.key] = !!loadedData.metricsByKey[row.key]
+                      }
+                    } else {
+                      for (const row of metricFilters) {
+                        next[row.key] = true
+                      }
+                    }
+                    setActiveMetricKeys(next)
+                  }}
+                >
+                  Load All
+                </button>
+                <button
+                  type="button"
+                  className="filterActionBtn"
+                  onClick={() => {
+                    const next: MetricToggleState = {}
+                    for (const row of metricFilters) next[row.key] = false
+                    setActiveMetricKeys(next)
+                  }}
+                >
+                  Clear All
+                </button>
+              </div>
+            </section>
+
             {Object.entries(groupedFilters).map(([group, rows]) => (
-              <FilterSection key={group} sectionId={`group-${group}`} titleBold={group}>
-                {rows.map((f) => (
-                  <MeasureRow key={f.key} switchId={`metric-${f.key}`} dataOn={!!activeMetricKeys[f.key]} onDataOnChange={(on) => setMetric(f.key, on)} dataAvailable={metricAvailable(f.key)}>
-                    <div className="measureRowLabelOnly"><strong>{f.label}</strong></div>
-                  </MeasureRow>
-                ))}
-              </FilterSection>
+              <Fragment key={group}>
+                <div style={{ display: 'flex', gap: 6, margin: '4px 0 2px' }}>
+                  <button
+                    type="button"
+                    className="filterActionBtn"
+                    disabled={!filtersReady}
+                    style={{ opacity: filtersReady ? 1 : 0.45, cursor: filtersReady ? 'pointer' : 'not-allowed' }}
+                    onClick={() => {
+                      const next = { ...activeMetricKeys }
+                      if (hasWorkbookMetrics && loadedData) {
+                        for (const row of rows) next[row.key] = !!loadedData.metricsByKey[row.key]
+                      } else {
+                        for (const row of rows) next[row.key] = true
+                      }
+                      setActiveMetricKeys(next)
+                    }}
+                  >
+                    {group} All On
+                  </button>
+                  <button
+                    type="button"
+                    className="filterActionBtn"
+                    onClick={() => {
+                      const next = { ...activeMetricKeys }
+                      for (const row of rows) next[row.key] = false
+                      setActiveMetricKeys(next)
+                    }}
+                  >
+                    {group} All Off
+                  </button>
+                </div>
+
+                <FilterSection sectionId={`group-${group}`} titleBold={`${group}:`}>
+                  {rows.map((f) => (
+                    <MeasureRow
+                      key={f.key}
+                      switchId={`metric-${f.key}`}
+                      dataOn={!!activeMetricKeys[f.key]}
+                      onDataOnChange={(on) => setMetric(f.key, on)}
+                      dataAvailable={metricAvailable(f.key)}
+                    >
+                      <strong>{f.label}</strong>
+                    </MeasureRow>
+                  ))}
+                </FilterSection>
+              </Fragment>
             ))}
 
             <InformationTable
-              activeMetrics={activeMetrics.map((m) => ({
-                label: m.label,
-                geography: m.geography,
-                loadedAreas: metricValueCounts?.[m.key] ?? Object.keys(m.values).length,
-                unit: m.unit,
-              }))}
-              selectedSmallArea={selectedSmallAreaPanel}
+              activeMetrics={activeMetrics.map((m) => ({ key: m.key, label: m.label, geography: m.geography, loadedAreas: Object.keys(m.values).length, unit: m.unit }))}
               households={households}
+              evCommercial={evCommercial}
               loadedFileName={loadedFileName}
               warnings={uploadDetailLines}
               importSummary={importSummary ?? []}
@@ -441,15 +392,16 @@ export default function App() {
             setSelectedTownCode('')
             setSelectedCountyLa('')
           }}
+          onGeoJsonReady={() => setGeoJsonReady(true)}
+          onStatsReady={() => setStatsReadyAt(Date.now())}
           activeMetrics={activeMetrics}
-          smallAreasGeoJson={staticSaGeoJson ?? EMPTY_FC}
-          smallAreasGeoJsonLoading={staticAssetsLoading}
           households={households}
           householdsLayerVisible={householdsLayerOn}
           boundaryCountyLinesVisible={boundaryCountyLinesOn}
           boundaryTownLinesVisible={boundaryTownLinesOn}
           boundarySmallAreaLinesVisible={boundarySmallAreaLinesOn}
-          onSmallAreaSelect={onSmallAreaSelect}
+          evCommercial={loadedData?.evCommercial ?? []}
+          evCommercialLayerVisible={evCommercialLayerOn}
         />
       </main>
     </div>

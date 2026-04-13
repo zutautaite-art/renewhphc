@@ -1,4 +1,3 @@
-
 import type { Feature, FeatureCollection, Point } from 'geojson'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import maplibregl, { type Map as MapLibreMap, type StyleSpecification } from 'maplibre-gl'
@@ -14,7 +13,10 @@ import { bboxForBuaCode, bboxForCountyLa, normGeoProp } from '../cso/boundaryLoo
 import { geometryBBox } from '../geoBounds'
 import type { HouseholdRecord } from '../types/households'
 
-type MetricValue = { mapValue: number; rawValue?: number | string }
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type MetricValue = { mapValue: number; pctValue?: number | null; rawValue?: number | string }
+type MetricStats  = { mean: number; std: number }
 
 export type ActiveMetric = {
   key: string
@@ -31,59 +33,44 @@ export type MapViewProps = {
   focusCountyLa?: string
   onLocationFilterAutoClear?: () => void
   activeMetrics?: ActiveMetric[]
-  /** Pre-built SA polygons + `m_<key>` metrics from `public/small_areas_metrics.geojson` (built by scripts/build_sa_geojson.py). */
-  smallAreasGeoJson: FeatureCollection
-  /** True while `/small_areas_metrics.geojson` (or companion assets) are still loading in the parent. */
-  smallAreasGeoJsonLoading?: boolean
   households?: HouseholdRecord[]
+  evCommercial?: HouseholdRecord[]
   householdsLayerVisible?: boolean
+  evCommercialLayerVisible?: boolean
   boundaryCountyLinesVisible?: boolean
   boundaryTownLinesVisible?: boolean
   boundarySmallAreaLinesVisible?: boolean
-  /** Click a small-area polygon (fill or outline) to pass feature properties to the app; click elsewhere to clear. */
-  onSmallAreaSelect?: (properties: Record<string, unknown> | null) => void
+  onGeoJsonReady?: () => void
+  /** After embedded-metric stats are ready; parent can bump deps so `activeMetrics` re-evaluates. */
+  onStatsReady?: () => void
 }
 
-const INITIAL_VIEW = { center: [-8.1, 53.35] as [number, number], zoom: 6.8 }
-const COUNTY_LINE = '#2563eb'
-const TOWN_LINE = '#92400e'
-const SA_LINE = '#dc2626'
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Plain object for React state (MapLibre may return frozen / odd prototypes on queried features). */
-function plainProps(raw: unknown): Record<string, unknown> {
-  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return {}
-  const out: Record<string, unknown> = {}
-  for (const k of Object.keys(raw as Record<string, unknown>)) {
-    out[k] = (raw as Record<string, unknown>)[k]
-  }
-  return out
-}
+const INITIAL_VIEW  = { center: [-8.1, 53.35] as [number, number], zoom: 6.8 }
+const COUNTY_LINE   = '#2563eb'
+const TOWN_LINE     = '#92400e'
+const SA_LINE       = '#dc2626'
+const SA_GEOJSON_URL = '/small_areas_metrics.geojson'
 
-/** Matches `safe_metric_prop` in scripts/build_sa_geojson.py → property `m_<name>`. */
-function metricGeoJsonPropertyName(metricKey: string): string {
-  const safe = metricKey.trim().replace(/[^a-zA-Z0-9_]+/g, '_').replace(/^_|_$/g, '') || 'metric'
-  return `m_${safe}`
-}
+// ─── Pure helpers ─────────────────────────────────────────────────────────────
 
-function selectionFeatureCollection(feature: Feature | null | undefined): FeatureCollection {
+function selectionFC(feature: Feature | null | undefined): FeatureCollection {
   if (!feature) return emptyFeatureCollection()
   return { type: 'FeatureCollection', features: [feature] }
 }
 
-function formatNumber(v: number | string | undefined): string {
-  if (v === undefined) return '—'
-  if (typeof v === 'string') return v
-  if (!Number.isFinite(v)) return '—'
-  return v.toLocaleString(undefined, { maximumFractionDigits: 2 })
-}
-
-function toHouseholdGeoJson(households: HouseholdRecord[]) {
+function toPointGeoJson(points: HouseholdRecord[]) {
   return {
     type: 'FeatureCollection' as const,
-    features: households.map((h) => ({
+    features: (points ?? []).map((h) => ({
       type: 'Feature' as const,
       geometry: { type: 'Point' as const, coordinates: [h.lon, h.lat] as [number, number] },
-      properties: { id: h.id, address: h.address ?? '', county: h.county ?? '', town: h.town ?? '' },
+      properties: {
+        fullAddress:  (h as any).fullAddress  ?? h.address ?? '',
+        customerType: (h as any).customerType ?? '',
+        dotType:      (h as any).dotType      ?? 'red',
+      },
     })),
   }
 }
@@ -100,275 +87,373 @@ function countyLabelPoints(fc: FeatureCollection): FeatureCollection {
     const box = geometryBBox(g)
     if (!box) continue
     const [w, s, e, n] = box
-    feats.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [(w + e) / 2, (s + n) / 2] }, properties: { COUNTY: name } })
+    feats.push({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [(w + e) / 2, (s + n) / 2] },
+      properties: { COUNTY: name },
+    })
     seen.add(name)
   }
   return { type: 'FeatureCollection', features: feats }
 }
 
-function metricExtents(metrics: ActiveMetric[], geography: 'small_area' | 'town'): Record<string, { min: number; max: number }> {
-  const out: Record<string, { min: number; max: number }> = {}
-  for (const metric of metrics) {
-    if (metric.geography !== geography) continue
-    const vals = Object.values(metric.values).map((v) => v.mapValue).filter(Number.isFinite)
-    if (!vals.length) continue
-    out[metric.key] = { min: Math.min(...vals), max: Math.max(...vals) }
+function aliasIds(raw: string): string[] {
+  const out = new Set<string>()
+  const s   = String(raw ?? '').trim()
+  if (!s) return []
+  out.add(s)
+  const withUnderscore = s.match(/^[A-Za-z]+\d{4}_(\d+)$/)
+  if (withUnderscore) {
+    const code = withUnderscore[1]
+    out.add(code.padStart(9, '0'))
+    out.add(code.replace(/^0+/, ''))
+  }
+  const digits = s.replace(/[^\d]/g, '')
+  if (digits) {
+    out.add(digits)
+    out.add(digits.replace(/^0+/, ''))
+    if (digits.length < 9)    out.add(digits.padStart(9, '0'))
+    if (digits.length === 8)  out.add('0' + digits)
+    if (digits.length === 10) out.add(digits.slice(1))
+  }
+  return [...out].filter(Boolean)
+}
+
+// ─── Statistics ───────────────────────────────────────────────────────────────
+
+// Compute mean/std from GeoJSON embedded _metrics values.
+// This is the ONLY source of truth for z-score stats — ensures stats and
+// colour values are always on the same scale (counts, not pct).
+function computeStatsFromFeatures(
+  fc: FeatureCollection,
+  metricKeys: string[],
+): Record<string, MetricStats> {
+  const buckets: Record<string, number[]> = {}
+  for (const f of fc.features) {
+    const p = (f.properties ?? {}) as Record<string, unknown>
+    let embedded: Record<string, { mapValue: number }> = {}
+    try {
+      const raw = p._metrics
+      embedded = typeof raw === 'string' ? JSON.parse(raw) : (raw ?? {})
+    } catch {}
+    for (const key of metricKeys) {
+      const hit = embedded[key]
+      if (hit?.mapValue != null && Number.isFinite(hit.mapValue)) {
+        ;(buckets[key] ??= []).push(hit.mapValue)
+      }
+    }
+  }
+  const out: Record<string, MetricStats> = {}
+  for (const [key, vals] of Object.entries(buckets)) {
+    if (vals.length < 2) continue
+    const mean = vals.reduce((s, v) => s + v, 0) / vals.length
+    const std  = Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length)
+    if (std > 0) out[key] = { mean, std }
   }
   return out
 }
 
-function normalizeMetric(value: number, min: number, max: number): number {
-  const span = max - min
-  if (!Number.isFinite(value)) return 0
-  if (span <= 1e-9) return 1
-  return Math.max(0, Math.min(1, (value - min) / span))
+function zNorm(value: number, mean: number, std: number): number {
+  const z = (value - mean) / std
+  return (Math.max(-2, Math.min(2, z)) + 2) / 4
 }
 
-function readNumericProp(props: Record<string, unknown>, prop: string): number | null {
-  const raw = props[prop]
-  if (raw === null || raw === undefined || raw === '') return null
-  const n = typeof raw === 'number' ? raw : Number(raw)
-  return Number.isFinite(n) ? n : null
-}
+// ─── Core colour computation ──────────────────────────────────────────────────
 
-/** Town metrics: still use in-memory `values` keyed by BUA / town id. */
-function attachCombinedMetricTown(fc: FeatureCollection, metrics: ActiveMetric[]): FeatureCollection {
-  const relevant = metrics.filter((m) => m.geography === 'town')
-  const extents = metricExtents(relevant, 'town')
+// For each SA feature:
+//   1. Parse _metrics JSON (GeoJSON embedded values = counts)
+//   2. For each active metric find the value (embedded first, aliasId fallback)
+//   3. Z-score normalise using pre-computed stats
+//   4. Average normalised scores → _score (0-1)
+//   5. _count = how many active metrics found a value (drives opacity)
+//
+// KEY FIX: _score divides by `contributing` not `relevant.length`.
+// This means a single active metric with data gives full colour range.
+// An SA with no data for ANY active metric gets _count=0 → transparent.
+function attachCombinedMetric(
+  fc: FeatureCollection,
+  metrics: ActiveMetric[],
+  geography: 'small_area' | 'town',
+  stats: Record<string, MetricStats>,
+): FeatureCollection {
+  const relevant = metrics.filter((m) => m.geography === geography)
 
-  return {
-    type: 'FeatureCollection',
-    features: fc.features.map((f) => {
-      const props = { ...((f.properties as Record<string, unknown> | null) ?? {}) }
-      const key = normGeoProp(props.BUA_CODE || props.GEOGID)
-      let score = 0
-      let contributing = 0
-      for (const metric of relevant) {
-        const hit = metric.values[key]
-        if (!hit) continue
-        const extent = extents[metric.key]
-        if (!extent) continue
-        score += normalizeMetric(hit.mapValue, extent.min, extent.max)
-        contributing += 1
-      }
-      const finalScore = contributing > 0 ? score / relevant.length : null
-      return { ...f, properties: { ...props, _score: finalScore, _count: contributing } }
-    }),
-  }
-}
-
-/** Small-area metrics: read numeric `m_<key>` from GeoJSON (build_sa_geojson.py). */
-function attachCombinedMetricSmallAreaFromGeoJson(fc: FeatureCollection, metrics: ActiveMetric[]): FeatureCollection {
-  const relevant = metrics.filter((m) => m.geography === 'small_area')
-  const extentMap: Record<string, { min: number; max: number }> = {}
-  for (const m of relevant) {
-    const prop = metricGeoJsonPropertyName(m.key)
-    const vals: number[] = []
-    for (const feat of fc.features) {
-      const p = (feat.properties as Record<string, unknown> | null) ?? {}
-      const n = readNumericProp(p, prop)
-      if (n !== null) vals.push(n)
+  // No active metrics → set all features to _count=0 (transparent)
+  if (relevant.length === 0) {
+    return {
+      type: 'FeatureCollection',
+      features: fc.features.map((f) => ({
+        ...f,
+        properties: {
+          ...((f.properties as Record<string, unknown> | null) ?? {}),
+          _score: null, _count: 0, _phobal_value: null,
+        },
+      })),
     }
-    if (vals.length) extentMap[m.key] = { min: Math.min(...vals), max: Math.max(...vals) }
   }
 
   return {
     type: 'FeatureCollection',
     features: fc.features.map((f) => {
       const props = { ...((f.properties as Record<string, unknown> | null) ?? {}) }
-      let score = 0
-      let contributing = 0
+
+      let embedded: Record<string, { mapValue: number; pctValue?: number | null }> = {}
+      try {
+        const raw = props._metrics
+        embedded = typeof raw === 'string' ? JSON.parse(raw) : (raw ?? {})
+      } catch {}
+
+      let score = 0, contributing = 0
+
       for (const metric of relevant) {
-        const ext = extentMap[metric.key]
-        if (!ext) continue
-        const prop = metricGeoJsonPropertyName(metric.key)
-        const num = readNumericProp(props, prop)
-        if (num === null) continue
-        score += normalizeMetric(num, ext.min, ext.max)
-        contributing += 1
+        // Primary: GeoJSON embedded value
+        let hit = embedded[metric.key] as MetricValue | undefined
+        // Fallback: workbook aliasId lookup
+        if (!hit) {
+          for (const k of aliasIds(normGeoProp(props.GEOGID as string))) {
+            if (metric.values?.[k]) { hit = metric.values[k]; break }
+          }
+        }
+        if (!hit) continue
+
+        // All metrics including Phobal: z-score normalisation
+        // HP_Score (mean≈0, std≈10) maps naturally:
+        //   -20 → z=-2 → score=0 (lightest), 0 → score=0.5, +20 → z=+2 → score=1 (darkest)
+        const s = stats[metric.key]
+        if (!s) continue
+        score += zNorm(hit.mapValue, s.mean, s.std)
+        contributing++
       }
-      const finalScore = contributing > 0 ? score / relevant.length : null
-      return { ...f, properties: { ...props, _score: finalScore, _count: contributing } }
+
+      return {
+        ...f,
+        properties: {
+          ...props,
+          _score:  contributing > 0 ? score / contributing : null,
+          _count:  contributing,
+        },
+      }
     }),
   }
 }
+
+// ─── MapLibre expressions ─────────────────────────────────────────────────────
+
+const SA_FILL_OPACITY: maplibregl.ExpressionSpecification = [
+  'case',
+  ['>', ['coalesce', ['to-number', ['get', '_count']], 0], 0], 0.72, 0,
+]
 
 function redScoreExpression(): maplibregl.ExpressionSpecification {
   return [
     'case',
-    ['!', ['has', '_score']], 'rgba(0,0,0,0)',
-    ['==', ['get', '_score'], null], 'rgba(0,0,0,0)',
-    ['interpolate', ['linear'], ['to-number', ['get', '_score']],
-      0, '#fff1f2',
-      0.25, '#fecdd3',
-      0.5, '#fb7185',
-      0.75, '#ef4444',
-      1, '#7f1d1d',
+    ['!', ['has', '_count']], 'rgba(0,0,0,0)',
+    ['<=', ['coalesce', ['to-number', ['get', '_count']], 0], 0], 'rgba(0,0,0,0)',
+    [
+      'step', ['coalesce', ['to-number', ['get', '_score']], 0],
+      '#fecdd3',        // 0.0–0.2  below average
+      0.2, '#fb7185',   // 0.2–0.4
+      0.4, '#ef4444',   // 0.4–0.6  around average
+      0.6, '#b91c1c',   // 0.6–0.8
+      0.8, '#7f1d1d',   // 0.8–1.0  hotspot
     ],
   ]
 }
 
-/** CSO overlay sources are only added in `map.on('load')`; `isStyleLoaded()` can be true before that. */
-function geoOverlaySourcesReady(map: MapLibreMap): boolean {
-  return !!map.getSource('cso-small-areas')
-}
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export function MapView(props: MapViewProps) {
   const propsRef = useRef(props)
-  useEffect(() => {
-    propsRef.current = props
-  }, [props])
+  useEffect(() => { propsRef.current = props }, [props])
 
-  const onSmallAreaSelectRef = useRef(props.onSmallAreaSelect)
-  useEffect(() => {
-    onSmallAreaSelectRef.current = props.onSmallAreaSelect
-  }, [props.onSmallAreaSelect])
+  const containerRef  = useRef<HTMLDivElement | null>(null)
+  const mapRootRef    = useRef<HTMLDivElement | null>(null)
+  const mapRef        = useRef<MapLibreMap | null>(null)
+  const suppressRef   = useRef(0)
 
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const mapRootRef = useRef<HTMLDivElement | null>(null)
-  const mapRef = useRef<MapLibreMap | null>(null)
-  const suppressAutoClearUntilRef = useRef(0)
+  const saRawLoadedRef = useRef<FeatureCollection>(emptyFeatureCollection())
+  const statsRef       = useRef<Record<string, MetricStats>>({})
+  const [saRaw,       setSaRaw]       = useState<FeatureCollection>(emptyFeatureCollection())
+  const [saLoading,   setSaLoading]   = useState(true)
+  const [statsReady,  setStatsReady]  = useState(false)
 
-  const [tooltip, setTooltip] = useState<{ x: number; y: number; title: string; lines: string[] } | null>(null)
+  type Tooltip = {
+    x: number; y: number; title: string; county: string
+    rows: Array<{ label: string; no: string; pct: string }>
+    simple?: string[]
+  }
+  const [tooltip, setTooltip] = useState<Tooltip | null>(null)
 
-  const style = useMemo(() => getBasemapStyle() as StyleSpecification, [])
+  const style         = useMemo(() => getBasemapStyle() as StyleSpecification, [])
   const activeMetrics = props.activeMetrics ?? []
-  const householdsGeo = useMemo(() => toHouseholdGeoJson(props.households ?? []), [props.households])
-  const countiesData = useMemo(() => props.boundaries.counties ?? emptyFeatureCollection(), [props.boundaries.counties])
-  const countyLabels = useMemo(() => countyLabelPoints(countiesData), [countiesData])
-  const townsData = useMemo(
-    () => attachCombinedMetricTown(props.boundaries.bua ?? emptyFeatureCollection(), activeMetrics),
-    [props.boundaries.bua, activeMetrics],
-  )
-  const saRaw = props.smallAreasGeoJson ?? emptyFeatureCollection()
-  const saData = useMemo(
-    () => attachCombinedMetricSmallAreaFromGeoJson(saRaw, activeMetrics),
-    [saRaw, activeMetrics],
-  )
 
-  const countiesDataRef = useRef(countiesData)
-  const countyLabelsRef = useRef(countyLabels)
-  const townsDataRef = useRef(townsData)
-  const saDataRef = useRef(saData)
-  const householdsGeoRef = useRef(householdsGeo)
+  const householdsGeo   = useMemo(() => toPointGeoJson(props.households   ?? []), [props.households])
+  const evCommercialGeo = useMemo(() => toPointGeoJson(props.evCommercial ?? []), [props.evCommercial])
+  const countiesData    = useMemo(() => props.boundaries.counties ?? emptyFeatureCollection(), [props.boundaries.counties])
+  const countyLabels    = useMemo(() => countyLabelPoints(countiesData), [countiesData])
+  const townsData       = useMemo(() => attachCombinedMetric(props.boundaries.bua ?? emptyFeatureCollection(), activeMetrics, 'town', statsRef.current), [props.boundaries.bua, activeMetrics, statsReady])
+  const saData          = useMemo(() => attachCombinedMetric(saRaw, activeMetrics, 'small_area', statsRef.current), [saRaw, activeMetrics, statsReady])
+
+  const countiesDataRef    = useRef(countiesData)
+  const countyLabelsRef    = useRef(countyLabels)
+  const townsDataRef       = useRef(townsData)
+  const saDataRef          = useRef(saData)
+  const householdsGeoRef   = useRef(householdsGeo)
+  const evCommercialGeoRef = useRef(evCommercialGeo)
+  useEffect(() => { countiesDataRef.current    = countiesData    }, [countiesData])
+  useEffect(() => { countyLabelsRef.current    = countyLabels    }, [countyLabels])
+  useEffect(() => { townsDataRef.current       = townsData       }, [townsData])
+  useEffect(() => { saDataRef.current          = saData          }, [saData])
+  useEffect(() => { householdsGeoRef.current   = householdsGeo   }, [householdsGeo])
+  useEffect(() => { evCommercialGeoRef.current = evCommercialGeo }, [evCommercialGeo])
+
+  // ── Load GeoJSON once ──────────────────────────────────────────────────────
   useEffect(() => {
-    countiesDataRef.current = countiesData
-  }, [countiesData])
+    setSaLoading(true)
+    fetch(SA_GEOJSON_URL)
+      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
+      .then((data: FeatureCollection) => {
+        // Compute stats from ALL metric keys present in embedded _metrics
+        const allKeys = new Set<string>()
+        for (const f of data.features) {
+          try {
+            const p = (f.properties ?? {}) as Record<string, unknown>
+            const m = typeof p._metrics === 'string' ? JSON.parse(p._metrics) : (p._metrics ?? {})
+            for (const k of Object.keys(m)) if (k !== '_county') allKeys.add(k)
+          } catch {}
+        }
+        statsRef.current = computeStatsFromFeatures(data, [...allKeys])
+        setStatsReady(true)   // triggers saData recompute with correct stats
+        propsRef.current.onStatsReady?.()
+
+        saRawLoadedRef.current = data
+        setSaRaw(data)
+        setSaLoading(false)
+        propsRef.current.onGeoJsonReady?.()
+
+        // If map already loaded, push immediately
+        const map = mapRef.current
+        if (map?.isStyleLoaded()) {
+          const processed = attachCombinedMetric(data, propsRef.current.activeMetrics ?? [], 'small_area', statsRef.current)
+          ;(map.getSource('cso-small-areas') as maplibregl.GeoJSONSource | undefined)?.setData(processed)
+        }
+      })
+      .catch((err) => { console.error('SA GeoJSON load failed:', err); setSaLoading(false) })
+  }, [])
+
+  // ── Update fill colour/opacity when metrics or stats change ───────────────
   useEffect(() => {
-    countyLabelsRef.current = countyLabels
-  }, [countyLabels])
+    const map = mapRef.current
+    if (!map || !map.isStyleLoaded() || !map.getLayer('cso-sa-fill')) return
+    map.setPaintProperty('cso-sa-fill', 'fill-color',   redScoreExpression())
+    map.setPaintProperty('cso-sa-fill', 'fill-opacity', SA_FILL_OPACITY)
+  }, [activeMetrics, statsReady])
+
+  // ── Fly to selected town / county ─────────────────────────────────────────
   useEffect(() => {
-    townsDataRef.current = townsData
-  }, [townsData])
-  useEffect(() => {
-    saDataRef.current = saData
-  }, [saData])
-  useEffect(() => {
-    householdsGeoRef.current = householdsGeo
-  }, [householdsGeo])
+    const map = mapRef.current
+    if (!map) return
+    if (props.focusBuaCode) {
+      const b = bboxForBuaCode(props.boundaries.bua, props.focusBuaCode)
+      if (b) { suppressRef.current = Date.now() + 2500; map.fitBounds([[b[0],b[1]],[b[2],b[3]]], { padding: 40, maxZoom: 14, duration: 800 }) }
+    } else if (props.focusCountyLa) {
+      const b = bboxForCountyLa(props.boundaries.counties, props.focusCountyLa)
+      if (b) { suppressRef.current = Date.now() + 2500; map.fitBounds([[b[0],b[1]],[b[2],b[3]]], { padding: 40, maxZoom: 10, duration: 800 }) }
+    }
+  }, [props.focusBuaCode, props.focusCountyLa, props.boundaries])
 
   useLayoutEffect(() => {
     const root = mapRootRef.current
     if (!root) return
-    const margin = 12
-    const updateDockPosition = () => {
-      const edge = `${Math.max(margin, 0)}px`
-      root.style.setProperty('--zoom-dock-top', edge)
-      root.style.setProperty('--zoom-dock-right', edge)
-    }
-    updateDockPosition()
-    const ro = new ResizeObserver(updateDockPosition)
+    const update = () => { root.style.setProperty('--zoom-dock-top','12px'); root.style.setProperty('--zoom-dock-right','12px') }
+    update()
+    const ro = new ResizeObserver(update)
     ro.observe(root)
-    window.addEventListener('scroll', updateDockPosition, true)
-    window.addEventListener('resize', updateDockPosition)
-    return () => {
-      ro.disconnect()
-      window.removeEventListener('scroll', updateDockPosition, true)
-      window.removeEventListener('resize', updateDockPosition)
-    }
+    window.addEventListener('scroll', update, true)
+    window.addEventListener('resize', update)
+    return () => { ro.disconnect(); window.removeEventListener('scroll', update, true); window.removeEventListener('resize', update) }
   }, [])
 
+  // ── Map init ───────────────────────────────────────────────────────────────
   useEffect(() => {
     const container = containerRef.current
     if (!container || mapRef.current) return
 
     const map = new maplibregl.Map({
-      container,
-      style,
-      center: INITIAL_VIEW.center,
-      zoom: INITIAL_VIEW.zoom,
+      container, style,
+      center: INITIAL_VIEW.center, zoom: INITIAL_VIEW.zoom,
       attributionControl: { compact: true, customAttribution: `${BASEMAP_ATTRIBUTION} ${CSO_BOUNDARY_ATTRIBUTION}` },
-      scrollZoom: true,
-      dragRotate: false,
-      touchZoomRotate: true,
+      scrollZoom: true, dragRotate: false, touchZoomRotate: true,
     })
     mapRef.current = map
     map.addControl(new maplibregl.NavigationControl({ showCompass: false, showZoom: true }), 'top-right')
 
-    let mapTornDown = false
-
-    /** Stable identity so `map.off('click', …)` always matches `map.on`. */
-    const onSmallAreaMapClick = (e: maplibregl.MapMouseEvent) => {
-      const cb = onSmallAreaSelectRef.current
-      if (!cb) return
-      const layers: string[] = []
-      if (map.getLayer('cso-sa-fill')) layers.push('cso-sa-fill')
-      if (map.getLayer('cso-sa-line')) layers.push('cso-sa-line')
-      if (!layers.length) return
-
-      const hits = map.queryRenderedFeatures(e.point, { layers })
-      const hit = hits.find((h: { layer?: { id?: string } }) => {
-        const id = h.layer?.id
-        return id === 'cso-sa-fill' || id === 'cso-sa-line'
-      })
-      if (hit?.properties != null && typeof hit.properties === 'object') {
-        cb(plainProps(hit.properties))
-      } else {
-        cb(null)
-      }
-    }
+    // Default arrow cursor, not grab
+    map.getCanvas().style.cursor = 'default'
+    map.on('dragstart', () => { map.getCanvas().style.cursor = 'grabbing' })
+    map.on('dragend',   () => { map.getCanvas().style.cursor = 'default'  })
 
     map.on('load', () => {
-      if (mapTornDown) return
-      map.addSource('cso-counties', { type: 'geojson', data: emptyFeatureCollection() })
-      map.addSource('cso-bua', { type: 'geojson', data: emptyFeatureCollection() })
-      map.addSource('cso-small-areas', { type: 'geojson', data: emptyFeatureCollection() })
-      map.addSource('cso-counties-selection', { type: 'geojson', data: emptyFeatureCollection() })
-      map.addSource('cso-bua-selection', { type: 'geojson', data: emptyFeatureCollection() })
+      // Sources
+      map.addSource('cso-counties',              { type: 'geojson', data: emptyFeatureCollection() })
+      map.addSource('cso-bua',                   { type: 'geojson', data: emptyFeatureCollection() })
+      map.addSource('cso-small-areas',           { type: 'geojson', data: emptyFeatureCollection() })
+      map.addSource('cso-counties-selection',    { type: 'geojson', data: emptyFeatureCollection() })
+      map.addSource('cso-bua-selection',         { type: 'geojson', data: emptyFeatureCollection() })
       map.addSource('cso-counties-label-points', { type: 'geojson', data: emptyFeatureCollection() })
-      map.addSource('households', { type: 'geojson', data: toHouseholdGeoJson([]) })
+      map.addSource('households',    { type: 'geojson', data: toPointGeoJson([]) })
+      map.addSource('ev-commercial', { type: 'geojson', data: toPointGeoJson([]) })
 
-      map.addLayer({ id: 'cso-counties-fill', type: 'fill', source: 'cso-counties', paint: { 'fill-color': 'rgba(0,0,0,0)', 'fill-opacity': 0 } })
-      map.addLayer({ id: 'cso-bua-fill', type: 'fill', source: 'cso-bua', paint: { 'fill-color': redScoreExpression(), 'fill-opacity': ['case', ['>', ['to-number', ['get', '_count']], 0], 0.18, 0] } })
-      map.addLayer({ id: 'cso-sa-fill', type: 'fill', source: 'cso-small-areas', paint: { 'fill-color': redScoreExpression(), 'fill-opacity': ['case', ['>', ['to-number', ['get', '_count']], 0], 0.65, 0] } })
-      map.addLayer({ id: 'cso-counties-line', type: 'line', source: 'cso-counties', paint: { 'line-color': COUNTY_LINE, 'line-width': ['interpolate', ['linear'], ['zoom'], 4, 2.4, 8, 2.0, 12, 1.6], 'line-opacity': 0.98 } })
-      map.addLayer({ id: 'cso-bua-line', type: 'line', source: 'cso-bua', paint: { 'line-color': TOWN_LINE, 'line-width': ['interpolate', ['linear'], ['zoom'], 4, 1.1, 8, 1.0, 12, 0.8], 'line-opacity': 0.95 } })
-      map.addLayer({ id: 'cso-sa-line', type: 'line', source: 'cso-small-areas', paint: { 'line-color': SA_LINE, 'line-width': ['interpolate', ['linear'], ['zoom'], 4, 0.5, 6.8, 0.7, 9, 0.8, 12, 0.65], 'line-opacity': ['interpolate', ['linear'], ['zoom'], 4, 0.4, 8, 0.65, 12, 0.5] } })
-      map.addLayer({ id: 'cso-counties-label', type: 'symbol', source: 'cso-counties-label-points', minzoom: 4.2, layout: { 'text-field': ['get', 'COUNTY'], 'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'], 'text-size': ['interpolate', ['linear'], ['zoom'], 4, 10, 7, 12, 10, 13], 'text-anchor': 'center', 'text-allow-overlap': false }, paint: { 'text-color': '#111827', 'text-halo-color': '#ffffff', 'text-halo-width': 2 } })
-      map.addLayer({ id: 'households-circle', type: 'circle', source: 'households', paint: { 'circle-color': '#ef4444', 'circle-radius': ['interpolate', ['linear'], ['zoom'], 6, 1.6, 10, 3.5, 14, 5.5], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1 }, layout: { visibility: 'visible' } })
+      // Fill layers
+      map.addLayer({ id: 'cso-counties-fill', type: 'fill', source: 'cso-counties',    paint: { 'fill-color': 'rgba(0,0,0,0)', 'fill-opacity': 0 } })
+      map.addLayer({ id: 'cso-bua-fill',      type: 'fill', source: 'cso-bua',         paint: { 'fill-color': redScoreExpression(), 'fill-opacity': SA_FILL_OPACITY } })
+      map.addLayer({ id: 'cso-sa-fill',       type: 'fill', source: 'cso-small-areas', paint: { 'fill-color': redScoreExpression(), 'fill-opacity': SA_FILL_OPACITY } })
 
-      ;(map.getSource('cso-counties') as maplibregl.GeoJSONSource).setData(countiesDataRef.current)
+      // Line layers
+      map.addLayer({ id: 'cso-counties-line', type: 'line', source: 'cso-counties',    paint: { 'line-color': COUNTY_LINE, 'line-width': ['interpolate',['linear'],['zoom'],4,2.4,8,2.0,12,1.6], 'line-opacity': 0.98 } })
+      map.addLayer({ id: 'cso-bua-line',      type: 'line', source: 'cso-bua',         paint: { 'line-color': TOWN_LINE,   'line-width': ['interpolate',['linear'],['zoom'],4,1.1,8,1.0,12,0.8], 'line-opacity': 0.95 } })
+      map.addLayer({ id: 'cso-sa-line',       type: 'line', source: 'cso-small-areas', paint: { 'line-color': SA_LINE,     'line-width': ['interpolate',['linear'],['zoom'],4,0.5,6.8,0.7,9,0.8,12,0.65], 'line-opacity': ['interpolate',['linear'],['zoom'],4,0.4,8,0.65,12,0.5] } })
+
+      // Labels
+      map.addLayer({ id: 'cso-counties-label', type: 'symbol', source: 'cso-counties-label-points', minzoom: 4.2,
+        layout: { 'text-field': ['get','COUNTY'], 'text-font': ['Open Sans Bold','Arial Unicode MS Bold'], 'text-size': ['interpolate',['linear'],['zoom'],4,10,7,12,10,13], 'text-anchor': 'center', 'text-allow-overlap': false },
+        paint:  { 'text-color': '#111827', 'text-halo-color': '#ffffff', 'text-halo-width': 2 } })
+
+      // Point layers
+      map.addLayer({ id: 'households-circle',    type: 'circle', source: 'households',    paint: { 'circle-color': '#ef4444', 'circle-radius': ['interpolate',['linear'],['zoom'],6,1.6,10,3.5,14,5.5], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1 } })
+      map.addLayer({ id: 'ev-commercial-circle', type: 'circle', source: 'ev-commercial', paint: { 'circle-color': '#eab308', 'circle-radius': ['interpolate',['linear'],['zoom'],6,1.6,10,3.5,14,5.5], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1 } })
+
+      // Cursor styles
+      map.on('mouseenter', 'cso-sa-fill',          () => { map.getCanvas().style.cursor = 'crosshair' })
+      map.on('mouseleave', 'cso-sa-fill',          () => { map.getCanvas().style.cursor = 'default'   })
+      map.on('mouseenter', 'households-circle',    () => { map.getCanvas().style.cursor = 'pointer'   })
+      map.on('mouseleave', 'households-circle',    () => { map.getCanvas().style.cursor = 'default'   })
+      map.on('mouseenter', 'ev-commercial-circle', () => { map.getCanvas().style.cursor = 'pointer'   })
+      map.on('mouseleave', 'ev-commercial-circle', () => { map.getCanvas().style.cursor = 'default'   })
+
+      // Seed sources from refs
+      ;(map.getSource('cso-counties')              as maplibregl.GeoJSONSource).setData(countiesDataRef.current)
       ;(map.getSource('cso-counties-label-points') as maplibregl.GeoJSONSource).setData(countyLabelsRef.current)
-      ;(map.getSource('cso-bua') as maplibregl.GeoJSONSource).setData(townsDataRef.current)
-      ;(map.getSource('cso-small-areas') as maplibregl.GeoJSONSource).setData(saDataRef.current)
-      ;(map.getSource('households') as maplibregl.GeoJSONSource).setData(householdsGeoRef.current)
+      ;(map.getSource('cso-bua')                   as maplibregl.GeoJSONSource).setData(townsDataRef.current)
+      ;(map.getSource('households')                as maplibregl.GeoJSONSource).setData(householdsGeoRef.current)
+      ;(map.getSource('ev-commercial')             as maplibregl.GeoJSONSource).setData(evCommercialGeoRef.current)
 
-      if (!mapTornDown) map.on('click', onSmallAreaMapClick)
-
-      // First paint: container size may still settle; GeoJSON tiles need an explicit frame after `setData`.
-      queueMicrotask(() => {
-        if (mapTornDown) return
-        map.resize()
-        map.triggerRepaint()
-      })
+      // SA: use loaded GeoJSON if already fetched, otherwise empty
+      if (saRawLoadedRef.current.features.length > 0) {
+        const processed = attachCombinedMetric(saRawLoadedRef.current, propsRef.current.activeMetrics ?? [], 'small_area', statsRef.current)
+        ;(map.getSource('cso-small-areas') as maplibregl.GeoJSONSource).setData(processed)
+      } else {
+        ;(map.getSource('cso-small-areas') as maplibregl.GeoJSONSource).setData(saDataRef.current)
+      }
     })
 
+    // Auto-clear location filter when user pans away
     map.on('moveend', () => {
       const now = Date.now()
-      if (now < suppressAutoClearUntilRef.current) return
-      const current = mapRef.current
-      if (!current) return
-      const bounds = current.getBounds()
+      if (now < suppressRef.current) return
+      const m = mapRef.current
+      if (!m) return
+      const bounds = m.getBounds()
       let keep = false
       const p = propsRef.current
       if (p.focusBuaCode) {
@@ -381,14 +466,10 @@ export function MapView(props: MapViewProps) {
       if ((p.focusBuaCode || p.focusCountyLa) && !keep) p.onLocationFilterAutoClear?.()
     })
 
-    return () => {
-      mapTornDown = true
-      map.off('click', onSmallAreaMapClick)
-      map.remove()
-      mapRef.current = null
-    }
+    return () => { map.remove(); mapRef.current = null }
   }, [style])
 
+  // ── Basemap swap ──────────────────────────────────────────────────────────
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
@@ -396,108 +477,151 @@ export function MapView(props: MapViewProps) {
     if (src?.setTiles) src.setTiles(basemapTileUrls(props.basemapMode))
   }, [props.basemapMode])
 
-  useEffect(() => {
-    const map = mapRef.current
-    if (!map || !map.isStyleLoaded() || !geoOverlaySourcesReady(map)) return
-    ;(map.getSource('cso-counties') as maplibregl.GeoJSONSource).setData(countiesData)
-    ;(map.getSource('cso-counties-label-points') as maplibregl.GeoJSONSource).setData(countyLabels)
-    ;(map.getSource('cso-bua') as maplibregl.GeoJSONSource).setData(townsData)
-    ;(map.getSource('cso-small-areas') as maplibregl.GeoJSONSource).setData(saData)
-    ;(map.getSource('households') as maplibregl.GeoJSONSource).setData(householdsGeo)
-    const stillThisMap = map
-    queueMicrotask(() => {
-      if (mapRef.current !== stillThisMap) return
-      stillThisMap.triggerRepaint()
-    })
-  }, [countiesData, countyLabels, townsData, saData, householdsGeo])
-
-  useEffect(() => {
-    const map = mapRef.current
-    if (!map) return
-    const vis = (on?: boolean) => (on === false ? 'none' : 'visible')
-    if (map.getLayer('cso-counties-line')) map.setLayoutProperty('cso-counties-line', 'visibility', vis(props.boundaryCountyLinesVisible))
-    if (map.getLayer('cso-counties-label')) map.setLayoutProperty('cso-counties-label', 'visibility', vis(props.boundaryCountyLinesVisible))
-    if (map.getLayer('cso-bua-line')) map.setLayoutProperty('cso-bua-line', 'visibility', vis(props.boundaryTownLinesVisible))
-    if (map.getLayer('cso-sa-line')) map.setLayoutProperty('cso-sa-line', 'visibility', vis(props.boundarySmallAreaLinesVisible))
-    if (map.getLayer('cso-sa-fill')) map.setLayoutProperty('cso-sa-fill', 'visibility', vis(props.boundarySmallAreaLinesVisible))
-    if (map.getLayer('households-circle')) map.setLayoutProperty('households-circle', 'visibility', vis(props.householdsLayerVisible))
-  }, [props.boundaryCountyLinesVisible, props.boundaryTownLinesVisible, props.boundarySmallAreaLinesVisible, props.householdsLayerVisible])
-
+  // ── Sync sources ──────────────────────────────────────────────────────────
   useEffect(() => {
     const map = mapRef.current
     if (!map || !map.isStyleLoaded()) return
-    const code = (props.focusBuaCode ?? '').trim()
-    const county = (props.focusCountyLa ?? '').trim()
-    const countyFeature = county ? props.boundaries.counties.features.find((f) => normGeoProp((f.properties as Record<string, unknown> | null)?.LOCAL_AUTHORITY) === county) : null
-    const buaFeature = code ? props.boundaries.bua.features.find((f) => normGeoProp((f.properties as Record<string, unknown> | null)?.BUA_CODE) === code || normGeoProp((f.properties as Record<string, unknown> | null)?.GEOGID) === code) : null
-    ;(map.getSource('cso-counties-selection') as maplibregl.GeoJSONSource | undefined)?.setData(selectionFeatureCollection(countyFeature ?? buaFeature ?? null))
-  }, [props.focusBuaCode, props.focusCountyLa, props.boundaries])
+    ;(map.getSource('cso-counties')              as maplibregl.GeoJSONSource | undefined)?.setData(countiesData)
+    ;(map.getSource('cso-counties-label-points') as maplibregl.GeoJSONSource | undefined)?.setData(countyLabels)
+    ;(map.getSource('cso-bua')                   as maplibregl.GeoJSONSource | undefined)?.setData(townsData)
+    ;(map.getSource('cso-small-areas')           as maplibregl.GeoJSONSource | undefined)?.setData(saData)
+    ;(map.getSource('households')                as maplibregl.GeoJSONSource | undefined)?.setData(householdsGeo)
+    ;(map.getSource('ev-commercial')             as maplibregl.GeoJSONSource | undefined)?.setData(evCommercialGeo)
+  }, [countiesData, countyLabels, townsData, saData, householdsGeo, evCommercialGeo])
 
+  // ── Visibility toggles ────────────────────────────────────────────────────
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
-    const onMove = (e: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
+    const vis = (on?: boolean) => on === false ? 'none' : 'visible'
+    if (map.getLayer('cso-counties-line'))     map.setLayoutProperty('cso-counties-line',     'visibility', vis(props.boundaryCountyLinesVisible))
+    if (map.getLayer('cso-counties-label'))    map.setLayoutProperty('cso-counties-label',    'visibility', vis(props.boundaryCountyLinesVisible))
+    if (map.getLayer('cso-bua-line'))          map.setLayoutProperty('cso-bua-line',          'visibility', vis(props.boundaryTownLinesVisible))
+    if (map.getLayer('cso-sa-line'))           map.setLayoutProperty('cso-sa-line',           'visibility', vis(props.boundarySmallAreaLinesVisible))
+    if (map.getLayer('cso-sa-fill'))           map.setLayoutProperty('cso-sa-fill',           'visibility', vis(props.boundarySmallAreaLinesVisible))
+    if (map.getLayer('households-circle'))     map.setLayoutProperty('households-circle',     'visibility', vis(props.householdsLayerVisible))
+    if (map.getLayer('ev-commercial-circle'))  map.setLayoutProperty('ev-commercial-circle',  'visibility', vis(props.evCommercialLayerVisible))
+  }, [props.boundaryCountyLinesVisible, props.boundaryTownLinesVisible, props.boundarySmallAreaLinesVisible, props.householdsLayerVisible, props.evCommercialLayerVisible])
+
+  // ── Selection highlight ───────────────────────────────────────────────────
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !map.isStyleLoaded()) return
+    const code   = (props.focusBuaCode  ?? '').trim()
+    const county = (props.focusCountyLa ?? '').trim()
+    const cf = county ? props.boundaries.counties.features.find((f) => normGeoProp((f.properties as any)?.LOCAL_AUTHORITY) === county) : null
+    const bf = code   ? props.boundaries.bua.features.find((f) => normGeoProp((f.properties as any)?.BUA_CODE) === code || normGeoProp((f.properties as any)?.GEOGID) === code) : null
+    ;(map.getSource('cso-counties-selection') as maplibregl.GeoJSONSource | undefined)?.setData(selectionFC(cf ?? bf ?? null))
+  }, [props.focusBuaCode, props.focusCountyLa, props.boundaries])
+
+  // ── Hover handlers ────────────────────────────────────────────────────────
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+
+    const onSaMove = (e: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
       const feature = e.features?.[0]
-      if (!feature) {
-        setTooltip(null)
-        return
-      }
+      if (!feature) return
       const p = (feature.properties ?? {}) as Record<string, unknown>
-      if (feature.layer.id === 'cso-sa-fill' || feature.layer.id === 'cso-sa-line') {
-        const lines = activeMetrics
-          .filter((m) => m.geography === 'small_area')
-          .map((m) => {
-            const prop = metricGeoJsonPropertyName(m.key)
-            const n = readNumericProp(p, prop)
-            return n !== null ? `${m.label}: ${formatNumber(n)}${m.unit ? ` ${m.unit}` : ''}` : null
-          })
-          .filter(Boolean) as string[]
-        const code = String(p.GEOGID ?? '').trim()
-        setTooltip({
-          x: e.point.x + 14,
-          y: e.point.y + 14,
-          title: [String(p.GEOGDESC ?? '').trim(), code].filter(Boolean).join(' — ') || code || 'Small area',
-          lines: code ? [`Code: ${code}`, ...lines] : lines,
+      let embedded: Record<string, { mapValue: number; pctValue?: number | null }> = {}
+      try { embedded = JSON.parse(String(p._metrics || '{}')) } catch {}
+
+      const rows = (propsRef.current.activeMetrics ?? [])
+        .filter((m) => m.geography === 'small_area')
+        .map((m) => {
+          const hit = embedded[m.key]
+          const rawNo = hit?.mapValue != null ? hit.mapValue : null
+
+          // Format No column — large numbers get K suffix
+          let noDisplay = '—'
+          if (rawNo != null) {
+            noDisplay = rawNo >= 1000
+              ? `${(rawNo / 1000).toFixed(1)}K`
+              : String(Math.round(rawNo))
+          }
+
+          return {
+            label: m.label,
+            no:  noDisplay,
+            pct: hit?.pctValue != null ? `${Number(hit.pctValue).toFixed(1)}%` : '—',
+          }
         })
-      } else if (feature.layer.id === 'households-circle') {
-        setTooltip({ x: e.point.x + 14, y: e.point.y + 14, title: String(p.address || 'Household'), lines: [String(p.town || ''), String(p.county || '')].filter(Boolean) })
-      }
+
+      setTooltip({ x: e.point.x + 16, y: e.point.y + 16, title: String(p._cso_code ?? p.GEOGID ?? ''), county: String(p.COUNTY ?? ''), rows })
     }
+
+    const onPointMove = (e: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
+      const feature = e.features?.[0]
+      if (!feature) return
+      const p = (feature.properties ?? {}) as Record<string, unknown>
+      setTooltip({ x: e.point.x + 16, y: e.point.y + 16, title: String(p.fullAddress || (p.dotType === 'yellow' ? 'EV Commercial' : 'Household')), county: '', rows: [], simple: [p.customerType ? String(p.customerType) : ''].filter(Boolean) })
+    }
+
     const clear = () => setTooltip(null)
-    map.on('mousemove', 'cso-sa-fill', onMove)
-    map.on('mouseleave', 'cso-sa-fill', clear)
-    map.on('mousemove', 'cso-sa-line', onMove)
-    map.on('mouseleave', 'cso-sa-line', clear)
-    map.on('mousemove', 'households-circle', onMove)
-    map.on('mouseleave', 'households-circle', clear)
+    map.on('mousemove',  'cso-sa-fill',          onSaMove)
+    map.on('mouseleave', 'cso-sa-fill',          clear)
+    map.on('mousemove',  'households-circle',    onPointMove)
+    map.on('mouseleave', 'households-circle',    clear)
+    map.on('mousemove',  'ev-commercial-circle', onPointMove)
+    map.on('mouseleave', 'ev-commercial-circle', clear)
     return () => {
-      map.off('mousemove', 'cso-sa-fill', onMove)
-      map.off('mouseleave', 'cso-sa-fill', clear)
-      map.off('mousemove', 'cso-sa-line', onMove)
-      map.off('mouseleave', 'cso-sa-line', clear)
-      map.off('mousemove', 'households-circle', onMove)
-      map.off('mouseleave', 'households-circle', clear)
+      map.off('mousemove',  'cso-sa-fill',          onSaMove)
+      map.off('mouseleave', 'cso-sa-fill',          clear)
+      map.off('mousemove',  'households-circle',    onPointMove)
+      map.off('mouseleave', 'households-circle',    clear)
+      map.off('mousemove',  'ev-commercial-circle', onPointMove)
+      map.off('mouseleave', 'ev-commercial-circle', clear)
     }
-  }, [activeMetrics])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
     <div ref={mapRootRef} className="mapRoot">
       <div ref={containerRef} className="mapContainer" />
-      {props.smallAreasGeoJsonLoading ? (
-        <div style={{ position: 'absolute', bottom: 8, left: 8, background: 'rgba(255,255,255,0.85)', padding: '4px 10px', borderRadius: 4, fontSize: 12, color: '#374151' }}>
+
+      {saLoading && (
+        <div style={{ position:'absolute', bottom:8, left:8, zIndex:10, background:'rgba(255,255,255,0.88)', padding:'4px 10px', borderRadius:4, fontSize:12, color:'#374151' }}>
           Loading small areas…
         </div>
-      ) : null}
-      {tooltip ? (
-        <div className="mapHoverTooltip" style={{ left: tooltip.x, top: tooltip.y }}>
-          <div className="mapHoverTooltipTitle">{tooltip.title}</div>
-          {tooltip.lines.map((line, i) => (
-            <div key={i} className="mapHoverTooltipLine">
-              {line}
-            </div>
-          ))}
+      )}
+
+      {tooltip && (
+        <div className="mapHoverTooltip" style={{ left: tooltip.x, top: tooltip.y, maxWidth: 300, pointerEvents: 'none' }}>
+          {tooltip.rows.length > 0 || tooltip.county ? (
+            <>
+              <div className="mapHoverTooltipTitle">{tooltip.title}</div>
+              {tooltip.county && <div className="mapHoverTooltipLine" style={{ color:'#6b7280', marginBottom:4 }}>{tooltip.county}</div>}
+              {tooltip.rows.length > 0 && (
+                <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11, marginTop:4 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign:'left',  borderBottom:'1px solid #e5e7eb', paddingBottom:2, fontWeight:600 }}>Metric</th>
+                      <th style={{ textAlign:'right', borderBottom:'1px solid #e5e7eb', paddingBottom:2, fontWeight:600 }}>No</th>
+                      <th style={{ textAlign:'right', borderBottom:'1px solid #e5e7eb', paddingBottom:2, fontWeight:600 }}>%</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tooltip.rows.map((row, i) => (
+                      <tr key={i}>
+                        <td style={{ padding:'2px 0',   borderBottom:'1px solid #f3f4f6' }}>{row.label}</td>
+                        <td style={{ textAlign:'right', borderBottom:'1px solid #f3f4f6', padding:'2px 4px' }}>{row.no}</td>
+                        <td style={{ textAlign:'right', borderBottom:'1px solid #f3f4f6', padding:'2px 0'   }}>{row.pct}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="mapHoverTooltipTitle">{tooltip.title}</div>
+              {(tooltip.simple ?? []).map((line, i) => <div key={i} className="mapHoverTooltipLine">{line}</div>)}
+            </>
+          )}
         </div>
-      ) : null}
+      )}
     </div>
   )
 }

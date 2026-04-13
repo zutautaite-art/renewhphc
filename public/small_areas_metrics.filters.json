@@ -2,49 +2,81 @@
   {
     "key": "age_35_44",
     "group": "Persona",
-    "label": "Age 35\u201344",
+    "label": "Age 35–44",
     "kind": "small_area_metric",
     "map_field": "age_35_44_pct",
     "unit": "%"
   },
   {
+    "key": "families_children",
+    "group": "Persona",
+    "label": "Families with children",
+    "kind": "small_area_metric",
+    "map_field": "families_children_pct",
+    "unit": "%"
+  },
+  {
     "key": "education_degree_plus",
     "group": "Persona",
-    "label": "Education level",
+    "label": "Education (Degree+)",
     "kind": "small_area_metric",
     "map_field": "degree_plus_pct",
     "unit": "%"
   },
   {
-    "key": "high_income_profile",
+    "key": "income_profile",
     "group": "Persona",
-    "label": "Income (high income only)",
+    "label": "Income",
     "kind": "small_area_metric",
-    "map_field": "high_income_pct",
+    "map_field": "income_profile_pct",
     "unit": "%"
   },
   {
-    "key": "renewables_installed",
-    "group": "Renewables",
-    "label": "Renewables installed",
+    "key": "phobal_score",
+    "group": "Persona",
+    "label": "Phobal",
     "kind": "small_area_metric",
-    "map_field": "renewables_pct",
+    "map_field": "phobal_score_pct",
+    "unit": ""
+  },
+  {
+    "key": "occupation_manager_professional",
+    "group": "Persona",
+    "label": "Occupation",
+    "kind": "small_area_metric",
+    "map_field": "occupation_manager_professional_pct",
     "unit": "%"
   },
   {
     "key": "electric_heating",
-    "group": "Renewables",
-    "label": "Electric heating",
+    "group": "Metrics",
+    "label": "Heating",
     "kind": "small_area_metric",
-    "map_field": "electric_pct",
+    "map_field": "electric_heating_pct",
+    "unit": "%"
+  },
+  {
+    "key": "solar_panels",
+    "group": "Metrics",
+    "label": "Solar",
+    "kind": "small_area_metric",
+    "map_field": "solar_panels_pct",
+    "unit": "%"
+  },
+  {
+    "key": "ev_households",
+    "group": "Metrics",
+    "label": "EV households",
+    "kind": "small_area_metric",
+    "map_field": "ev_households_pct",
     "unit": "%"
   },
   {
     "key": "heat_pumps",
-    "group": "Renewables",
+    "group": "Metrics",
     "label": "Heat pumps",
     "kind": "small_area_metric",
-    "map_field": "heat_pump_pct",
+    "map_field": "heat_pumps_pct",
     "unit": "%"
   }
 ]

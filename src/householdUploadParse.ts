@@ -53,7 +53,9 @@ const LON_KEYS = ['lon', 'lng', 'longitude_clean', 'clean_longitude', 'long', 'l
 const ID_KEYS = ['id', 'hh_id', 'household_id', 'uid', 'ref', 'eircode']
 const COUNTY_KEYS = ['county', 'county_name', 'countyname', 'local_authority', 'la', 'council', 'admin_county', 'region', 'area', 'admin_area']
 const TOWN_KEYS = ['town', 'town_name', 'settlement', 'bua', 'built_up_area', 'ed', 'electoral_division']
-const ADDRESS_KEYS = ['address', 'full_address', 'addr', 'street_address', 'postal_address', 'location', 'eircode']
+const ADDRESS_KEYS = ['full_address', 'address', 'addr', 'street_address', 'postal_address', 'location', 'eircode']
+const DOT_TYPE_KEYS = ['dot_type', 'dot type', 'dottype']
+const CUSTOMER_TYPE_KEYS = ['customer_type', 'customer segment', 'segment', 'type']
 const UPLOAD_METRIC_KEYS = ['value', 'metric', 'amount', 'total', 'score', 'weight', 'data', 'data_value', 'quantity', 'sum', 'potential_customers', 'customers', 'population', 'kwh', 'mwh']
 
 export function parseUploadMetricFromLookup(lookup: Map<string, unknown>): number | undefined {
@@ -97,14 +99,29 @@ export function parseHouseholdRows(rows: Record<string, unknown>[]): { parsed: H
     }
 
     const addrRaw = getFirst(lookup, ADDRESS_KEYS)
-    const address = addrRaw !== undefined && addrRaw !== null && String(addrRaw).trim() !== '' ? String(addrRaw).trim() : undefined
+    const fullAddress =
+      addrRaw !== undefined && addrRaw !== null && String(addrRaw).trim() !== '' ? String(addrRaw).trim() : undefined
+    const address = fullAddress
     const uploadMetric = parseUploadMetricFromLookup(lookup)
+
+    const dotRaw = getFirst(lookup, DOT_TYPE_KEYS)
+    const dotLower = String(dotRaw ?? '').trim().toLowerCase()
+    const dotType: 'red' | 'yellow' = dotLower === 'yellow' ? 'yellow' : 'red'
+
+    const customerTypeRaw = getFirst(lookup, CUSTOMER_TYPE_KEYS)
+    const customerType =
+      customerTypeRaw !== undefined && customerTypeRaw !== null && String(customerTypeRaw).trim() !== ''
+        ? String(customerTypeRaw).trim()
+        : undefined
 
     parsed.push({
       id,
       lat,
       lon,
       address,
+      fullAddress,
+      dotType,
+      customerType,
       county: String(getFirst(lookup, COUNTY_KEYS) ?? '').trim() || undefined,
       town: String(getFirst(lookup, TOWN_KEYS) ?? '').trim() || undefined,
       uploadMetric,

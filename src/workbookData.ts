@@ -17,7 +17,8 @@ export type FilterConfigRow = {
   status?: string
 }
 
-type MetricValue = { mapValue: number; rawValue?: number | string }
+/** `mapValue` = raw count (`_no` column); `pctValue` = percentage (`_pct` / map_field) for tables. */
+export type MetricValue = { mapValue: number; pctValue: number | null; rawValue?: number | string }
 
 export type ParsedMetric = {
   key: MetricKey
@@ -29,6 +30,7 @@ export type ParsedMetric = {
 
 export type ParsedWorkbookData = {
   households: HouseholdRecord[]
+  evCommercial: HouseholdRecord[]
   metricsByKey: Record<string, ParsedMetric>
   filterConfig: FilterConfigRow[]
   importSummary: { sheetName: string; rowsImported: number; detail: string }[]
@@ -76,35 +78,39 @@ function inferUnit(field: string | undefined): string | undefined {
 function normalizeAreaId(raw: unknown): string {
   const s = String(raw ?? '').trim()
   if (!s) return ''
-  const u = s.toUpperCase()
+  const slashIdx = s.indexOf('/')
+  const base = slashIdx >= 0 ? s.slice(0, slashIdx).trim() : s
+  const u = base.toUpperCase()
   if (u.startsWith('SOURCE:') || u.startsWith('NOTE:') || u === 'IRELAND TOTAL') return ''
-  const direct = s.match(/\d{7,11}(?:\/\d{1,4})?/)?.[0]
-  if (direct) return direct
-  return s
+  const digits = base.replace(/[^\d]/g, '')
+  if (!digits) return ''
+  return digits.length >= 7 && digits.length <= 11 ? digits.padStart(9, '0') : digits
 }
 
-function aliasIds(id: string): string[] {
+/** GEOGID ↔ Excel `cso_code` matching (2022 letter+digits, legacy SA2017_…, slash suffixes). */
+export function aliasIds(raw: string): string[] {
   const out = new Set<string>()
-  const t = id.trim()
-  if (!t) return []
-  out.add(t)
-  const digits = t.replace(/[^\d]/g, '')
+  const s = String(raw ?? '').trim()
+  if (!s) return []
+  out.add(s)
+  // New 2022 format: A057103001 (letter + digits, no underscore)
+  // Old format: SA2017_017002003
+  const withUnderscore = s.match(/^[A-Za-z]+\d{4}_(\d+)$/)
+  if (withUnderscore) {
+    const code = withUnderscore[1]
+    out.add(code.padStart(9, '0'))
+    out.add(code.replace(/^0+/, ''))
+  }
+
+  const digits = s.replace(/[^\d]/g, '')
   if (digits) {
     out.add(digits)
     out.add(digits.replace(/^0+/, ''))
     if (digits.length < 9) out.add(digits.padStart(9, '0'))
-    if (digits.length == 8) out.add('0' + digits)
+    if (digits.length === 8) out.add('0' + digits)
+    if (digits.length === 10) out.add(digits.slice(1)) // A1470050003 → 470050003
   }
-  const base = t.split('/')[0]?.trim()
-  if (base) {
-    out.add(base)
-    const baseDigits = base.replace(/[^\d]/g, '')
-    if (baseDigits) {
-      out.add(baseDigits)
-      out.add(baseDigits.replace(/^0+/, ''))
-      if (baseDigits.length < 9) out.add(baseDigits.padStart(9, '0'))
-    }
-  }
+
   return [...out].filter(Boolean)
 }
 
@@ -120,6 +126,8 @@ function parseFilterConfig(rows: Record<string, unknown>[]): FilterConfigRow[] {
     const kind = (kindRaw === 'household_boolean' || kindRaw === 'town_metric' || kindRaw === 'small_area_metric'
       ? kindRaw
       : 'small_area_metric') as FilterConfigRow['kind']
+    const status = String(getFirst(lookup, ['status']) ?? '').trim().toLowerCase()
+    if (status !== 'use') continue
     out.push({
       group,
       key,
@@ -134,6 +142,10 @@ function parseFilterConfig(rows: Record<string, unknown>[]): FilterConfigRow[] {
   return out
 }
 
+function statusIsUse(row: FilterConfigRow): boolean {
+  return String(row.status ?? '').trim().toLowerCase() === 'use'
+}
+
 function parseMetricRows(
   rows: Record<string, unknown>[],
   cfg: FilterConfigRow[],
@@ -141,7 +153,12 @@ function parseMetricRows(
   geography: 'small_area' | 'town',
 ): Record<string, ParsedMetric> {
   const metrics: Record<string, ParsedMetric> = {}
-  const usableCfg = cfg.filter((c) => c.kind === (geography === 'small_area' ? 'small_area_metric' : 'town_metric') && c.mapField && !String(c.status ?? '').toLowerCase().startsWith('no'))
+  const usableCfg = cfg.filter(
+    (c) =>
+      c.kind === (geography === 'small_area' ? 'small_area_metric' : 'town_metric') &&
+      !!(c.mapField && String(c.mapField).trim()) &&
+      statusIsUse(c),
+  )
   if (!rows.length || !usableCfg.length) return metrics
 
   const headerSet = new Set<string>()
@@ -160,24 +177,40 @@ function parseMetricRows(
       warnings.push(`${geography === 'small_area' ? 'small_area_master' : 'town_master'}: map field "${mapField}" for filter "${conf.key}" was not found.`)
       continue
     }
+    if (!rawKey && geography === 'small_area') {
+      warnings.push(`small_area_master: raw_field missing for filter "${conf.key}" — skipped.`)
+      continue
+    }
+    if (rawKey && !headerSet.has(rawKey)) {
+      warnings.push(
+        `${geography === 'small_area' ? 'small_area_master' : 'town_master'}: raw field "${rawField}" for filter "${conf.key}" was not found.`,
+      )
+      continue
+    }
 
     const values: Record<string, MetricValue> = {}
     rows.forEach((row, idx) => {
       const lookup = buildLookup(row)
       const id = normalizeAreaId(getFirst(lookup, idAliases))
       if (!id) return
-      const rawNum = lookup.get(mapKey)
-      const num = parseCellNumber(rawNum)
-      if (num === null) {
-        const rawVal = rawNum
+      const pctNum = parseCellNumber(lookup.get(mapKey))
+      const countNum = rawKey ? parseCellNumber(lookup.get(rawKey)) : parseCellNumber(lookup.get(mapKey))
+      if (countNum === null) {
+        const rawVal = rawKey ? lookup.get(rawKey) : lookup.get(mapKey)
         if (rawVal !== '' && rawVal !== null && rawVal !== undefined) {
-          warnings.push(`${geography === 'small_area' ? 'small_area_master' : 'town_master'} row ${idx + 2}: "${mapKey}" is not numeric — skipped.`)
+          warnings.push(
+            `${geography === 'small_area' ? 'small_area_master' : 'town_master'} row ${idx + 2}: count column for "${conf.key}" is not numeric — skipped.`,
+          )
         }
         return
       }
-      const raw = rawKey ? lookup.get(rawKey) : undefined
+      const legacyRaw = rawKey ? lookup.get(rawKey) : undefined
       for (const alias of aliasIds(id)) {
-        values[alias] = { mapValue: num, rawValue: typeof raw === 'string' || typeof raw === 'number' ? raw : undefined }
+        values[alias] = {
+          mapValue: countNum,
+          pctValue: pctNum,
+          rawValue: typeof legacyRaw === 'string' || typeof legacyRaw === 'number' ? legacyRaw : undefined,
+        }
       }
     })
 
@@ -197,6 +230,7 @@ function parseMetricRows(
 
 export function parseWorkbookData(wb: WorkBook): ParsedWorkbookData {
   const households: HouseholdRecord[] = []
+  const evCommercial: HouseholdRecord[] = []
   const warnings: string[] = []
   const importSummary: ParsedWorkbookData['importSummary'] = []
   const metricsByKey: Record<string, ParsedMetric> = {}
@@ -222,6 +256,17 @@ export function parseWorkbookData(wb: WorkBook): ParsedWorkbookData {
     warnings.push('households_clean sheet not found.')
   }
 
+  const evSheet = wb.Sheets['ev_commercial_clean']
+  if (evSheet) {
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(evSheet, { defval: '', raw: true })
+    const ev = parseHouseholdRows(rows)
+    evCommercial.push(...ev.parsed)
+    warnings.push(...ev.errors.map((e) => `ev_commercial_clean: ${e}`))
+    importSummary.push({ sheetName: 'ev_commercial_clean', rowsImported: ev.parsed.length, detail: 'EV commercial rows (lat/lon)' })
+  } else {
+    warnings.push('ev_commercial_clean sheet not found.')
+  }
+
   const saSheet = wb.Sheets['small_area_master']
   if (saSheet) {
     const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(saSheet, { defval: '', raw: true })
@@ -242,5 +287,5 @@ export function parseWorkbookData(wb: WorkBook): ParsedWorkbookData {
     warnings.push('Workbook did not match the cleaned template (small_area_master / households_clean / filter_config).')
   }
 
-  return { households, metricsByKey, filterConfig, importSummary, warnings }
+  return { households, evCommercial, metricsByKey, filterConfig, importSummary, warnings }
 }

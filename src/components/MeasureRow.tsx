@@ -54,7 +54,7 @@ export function MeasureRow({ switchId, dataOn, onDataOnChange, children, dataAva
 
   return (
     <div className="measureRow">
-      <div className="measureRowBody">{children}</div>
+      <div className={`measureRowLabelOnly ${unavailable ? 'measureRowDisabled' : ''}`}>{children}</div>
       <InlineSwitch id={switchId} on={effectiveOn} unavailable={unavailable} onChange={onDataOnChange} />
     </div>
   )
