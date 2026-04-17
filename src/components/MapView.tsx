@@ -270,16 +270,18 @@ export function MapView(props: MapViewProps) {
   const mapRootRef    = useRef<HTMLDivElement | null>(null)
   const mapRef        = useRef<MapLibreMap | null>(null)
   const suppressRef   = useRef(0)
+  const hoveredFeatureIdRef = useRef<string | number | null>(null)
 
   const saRawLoadedRef = useRef<FeatureCollection>(emptyFeatureCollection())
   const statsRef       = useRef<Record<string, MetricStats>>({})
   const [saRaw,       setSaRaw]       = useState<FeatureCollection>(emptyFeatureCollection())
   const [saLoading,   setSaLoading]   = useState(true)
   const [statsReady,  setStatsReady]  = useState(false)
+  const [legendOpen, setLegendOpen] = useState(true)
 
   type Tooltip = {
     x: number; y: number; title: string; county: string
-    rows: Array<{ label: string; no: string; pct: string }>
+    rows: Array<{ key: string; label: string; no: string; pct: string }>
     simple?: string[]
   }
   const [tooltip, setTooltip] = useState<Tooltip | null>(null)
@@ -397,7 +399,7 @@ export function MapView(props: MapViewProps) {
       // Sources
       map.addSource('cso-counties',              { type: 'geojson', data: emptyFeatureCollection() })
       map.addSource('cso-bua',                   { type: 'geojson', data: emptyFeatureCollection() })
-      map.addSource('cso-small-areas',           { type: 'geojson', data: emptyFeatureCollection() })
+      map.addSource('cso-small-areas',           { type: 'geojson', data: emptyFeatureCollection(), generateId: true })
       map.addSource('cso-counties-selection',    { type: 'geojson', data: emptyFeatureCollection() })
       map.addSource('cso-bua-selection',         { type: 'geojson', data: emptyFeatureCollection() })
       map.addSource('cso-counties-label-points', { type: 'geojson', data: emptyFeatureCollection() })
@@ -408,6 +410,22 @@ export function MapView(props: MapViewProps) {
       map.addLayer({ id: 'cso-counties-fill', type: 'fill', source: 'cso-counties',    paint: { 'fill-color': 'rgba(0,0,0,0)', 'fill-opacity': 0 } })
       map.addLayer({ id: 'cso-bua-fill',      type: 'fill', source: 'cso-bua',         paint: { 'fill-color': redScoreExpression(), 'fill-opacity': SA_FILL_OPACITY } })
       map.addLayer({ id: 'cso-sa-fill',       type: 'fill', source: 'cso-small-areas', paint: { 'fill-color': redScoreExpression(), 'fill-opacity': SA_FILL_OPACITY } })
+
+      map.addLayer({
+        id: 'cso-sa-hover-line',
+        type: 'line',
+        source: 'cso-small-areas',
+        paint: {
+          'line-color': '#16a34a',
+          'line-width': 5,
+          'line-opacity': [
+            'case',
+            ['boolean', ['feature-state', 'hovered'], false],
+            1,
+            0,
+          ],
+        },
+      })
 
       // Line layers
       map.addLayer({ id: 'cso-counties-line', type: 'line', source: 'cso-counties',    paint: { 'line-color': COUNTY_LINE, 'line-width': ['interpolate',['linear'],['zoom'],4,2.4,8,2.0,12,1.6], 'line-opacity': 0.98 } })
@@ -522,6 +540,22 @@ export function MapView(props: MapViewProps) {
     const onSaMove = (e: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
       const feature = e.features?.[0]
       if (!feature) return
+
+      const mapInst = mapRef.current
+      if (mapInst && feature.id !== undefined) {
+        if (hoveredFeatureIdRef.current !== null) {
+          mapInst.setFeatureState(
+            { source: 'cso-small-areas', id: hoveredFeatureIdRef.current },
+            { hovered: false },
+          )
+        }
+        hoveredFeatureIdRef.current = feature.id
+        mapInst.setFeatureState(
+          { source: 'cso-small-areas', id: feature.id },
+          { hovered: true },
+        )
+      }
+
       const p = (feature.properties ?? {}) as Record<string, unknown>
       let embedded: Record<string, { mapValue: number; pctValue?: number | null }> = {}
       try { embedded = JSON.parse(String(p._metrics || '{}')) } catch {}
@@ -541,6 +575,7 @@ export function MapView(props: MapViewProps) {
           }
 
           return {
+            key: m.key,
             label: m.label,
             no:  noDisplay,
             pct: hit?.pctValue != null ? `${Number(hit.pctValue).toFixed(1)}%` : '—',
@@ -558,15 +593,26 @@ export function MapView(props: MapViewProps) {
     }
 
     const clear = () => setTooltip(null)
+    const onSaLeave = () => {
+      const mapInst = mapRef.current
+      if (mapInst && hoveredFeatureIdRef.current !== null) {
+        mapInst.setFeatureState(
+          { source: 'cso-small-areas', id: hoveredFeatureIdRef.current },
+          { hovered: false },
+        )
+        hoveredFeatureIdRef.current = null
+      }
+      setTooltip(null)
+    }
     map.on('mousemove',  'cso-sa-fill',          onSaMove)
-    map.on('mouseleave', 'cso-sa-fill',          clear)
+    map.on('mouseleave', 'cso-sa-fill',          onSaLeave)
     map.on('mousemove',  'households-circle',    onPointMove)
     map.on('mouseleave', 'households-circle',    clear)
     map.on('mousemove',  'ev-commercial-circle', onPointMove)
     map.on('mouseleave', 'ev-commercial-circle', clear)
     return () => {
       map.off('mousemove',  'cso-sa-fill',          onSaMove)
-      map.off('mouseleave', 'cso-sa-fill',          clear)
+      map.off('mouseleave', 'cso-sa-fill',          onSaLeave)
       map.off('mousemove',  'households-circle',    onPointMove)
       map.off('mouseleave', 'households-circle',    clear)
       map.off('mousemove',  'ev-commercial-circle', onPointMove)
@@ -588,40 +634,110 @@ export function MapView(props: MapViewProps) {
       )}
 
       {tooltip && (
-        <div className="mapHoverTooltip" style={{ left: tooltip.x, top: tooltip.y, maxWidth: 300, pointerEvents: 'none' }}>
+        <div
+          className="mapHoverTooltip"
+          style={{ left: tooltip.x, top: tooltip.y, maxWidth: 340, pointerEvents: 'none' }}
+        >
           {tooltip.rows.length > 0 || tooltip.county ? (
             <>
               <div className="mapHoverTooltipTitle">{tooltip.title}</div>
-              {tooltip.county && <div className="mapHoverTooltipLine" style={{ color:'#6b7280', marginBottom:4 }}>{tooltip.county}</div>}
+              {tooltip.county && (
+                <div className="mapHoverTooltipLine" style={{ color: '#6b7280', marginBottom: 4 }}>
+                  {tooltip.county}
+                </div>
+              )}
               {tooltip.rows.length > 0 && (
-                <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11, marginTop:4 }}>
-                  <thead>
-                    <tr>
-                      <th style={{ textAlign:'left',  borderBottom:'1px solid #e5e7eb', paddingBottom:2, fontWeight:600 }}>Metric</th>
-                      <th style={{ textAlign:'right', borderBottom:'1px solid #e5e7eb', paddingBottom:2, fontWeight:600 }}>No</th>
-                      <th style={{ textAlign:'right', borderBottom:'1px solid #e5e7eb', paddingBottom:2, fontWeight:600 }}>%</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {tooltip.rows.map((row, i) => (
-                      <tr key={i}>
-                        <td style={{ padding:'2px 0',   borderBottom:'1px solid #f3f4f6' }}>{row.label}</td>
-                        <td style={{ textAlign:'right', borderBottom:'1px solid #f3f4f6', padding:'2px 4px' }}>{row.no}</td>
-                        <td style={{ textAlign:'right', borderBottom:'1px solid #f3f4f6', padding:'2px 0'   }}>{row.pct}</td>
+                <>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', paddingBottom: 2, fontWeight: 600, paddingRight: 8 }}>Metric (CSO 2022)</th>
+                        <th style={{ textAlign: 'right', borderBottom: '1px solid #e5e7eb', paddingBottom: 2, fontWeight: 600, paddingRight: 4 }}>No</th>
+                        <th style={{ textAlign: 'right', borderBottom: '1px solid #e5e7eb', paddingBottom: 2, fontWeight: 600 }}>%</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {tooltip.rows.map((row, i) => (
+                        <tr key={i}>
+                          <td style={{ padding: '2px 8px 2px 0', borderBottom: '1px solid #f3f4f6', whiteSpace: 'nowrap' }}>{row.label}</td>
+                          <td style={{ textAlign: 'right', borderBottom: '1px solid #f3f4f6', padding: '2px 4px' }}>{row.no}</td>
+                          <td style={{ textAlign: 'right', borderBottom: '1px solid #f3f4f6', padding: '2px 0' }}>{row.pct}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
               )}
             </>
           ) : (
             <>
               <div className="mapHoverTooltipTitle">{tooltip.title}</div>
-              {(tooltip.simple ?? []).map((line, i) => <div key={i} className="mapHoverTooltipLine">{line}</div>)}
+              {(tooltip.simple ?? []).map((line, i) => (
+                <div key={i} className="mapHoverTooltipLine">{line}</div>
+              ))}
             </>
           )}
         </div>
       )}
+
+      {/* Colour legend */}
+      <div style={{
+        position: 'absolute',
+        bottom: 28,
+        right: 8,
+        zIndex: 10,
+        background: 'rgba(255,255,255,0.95)',
+        borderRadius: 6,
+        boxShadow: '0 1px 4px rgba(0,0,0,0.18)',
+        fontSize: 11,
+        minWidth: 150,
+        userSelect: 'none',
+      }}>
+        {/* Header — always visible, click to collapse */}
+        <div
+          onClick={() => setLegendOpen(o => !o)}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '5px 8px',
+            cursor: 'pointer',
+            fontWeight: 600,
+            color: '#374151',
+            borderBottom: legendOpen ? '1px solid #f3f4f6' : 'none',
+          }}
+        >
+          <span>Potential Index</span>
+          <span style={{ fontSize: 9, marginLeft: 8, color: '#9ca3af' }}>
+            {legendOpen ? '▲' : '▼'}
+          </span>
+        </div>
+
+        {/* Body — collapsible */}
+        {legendOpen && (
+          <div style={{ padding: '6px 8px 8px' }}>
+            {[
+              { color: '#7f1d1d', label: 'High Potential' },
+              { color: '#b91c1c', label: 'Above Average' },
+              { color: '#ef4444', label: 'Average' },
+              { color: '#fb7185', label: 'Slightly Below Avg' },
+              { color: '#fecdd3', label: 'Below Average' },
+            ].map(({ color, label }) => (
+              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                <div style={{
+                  width: 14, height: 14, borderRadius: 2,
+                  background: color, flexShrink: 0,
+                  border: '1px solid rgba(0,0,0,0.08)',
+                }} />
+                <span style={{ color: '#374151' }}>{label}</span>
+              </div>
+            ))}
+            <div style={{ marginTop: 5, color: '#9ca3af', fontSize: 10, borderTop: '1px solid #f3f4f6', paddingTop: 4 }}>
+              Z-score · CSO 2022
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
