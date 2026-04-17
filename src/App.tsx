@@ -72,9 +72,9 @@ export default function App() {
 
   useEffect(() => {
     try {
-      const hhRaw = sessionStorage.getItem('hh_points')
-      const evRaw = sessionStorage.getItem('ev_points')
-      const fname = sessionStorage.getItem('hh_filename')
+      const hhRaw = localStorage.getItem('hh_points')
+      const evRaw = localStorage.getItem('ev_points')
+      const fname = localStorage.getItem('hh_filename')
       if (hhRaw && evRaw && fname) {
         const hh = JSON.parse(hhRaw) as HouseholdRecord[]
         const ev = JSON.parse(evRaw) as HouseholdRecord[]
@@ -174,9 +174,9 @@ export default function App() {
 
   async function handleWorkbook(file: File) {
     try {
-      sessionStorage.removeItem('hh_points')
-      sessionStorage.removeItem('ev_points')
-      sessionStorage.removeItem('hh_filename')
+      localStorage.removeItem('hh_points')
+      localStorage.removeItem('ev_points')
+      localStorage.removeItem('hh_filename')
 
       const buffer = await file.arrayBuffer()
       const wb = XLSX.read(buffer, { type: 'array' })
@@ -188,9 +188,9 @@ export default function App() {
       setLoadedFileName(file.name)
 
       try {
-        sessionStorage.setItem('hh_points', JSON.stringify(parsed.households))
-        sessionStorage.setItem('ev_points', JSON.stringify(parsed.evCommercial ?? []))
-        sessionStorage.setItem('hh_filename', file.name)
+        localStorage.setItem('hh_points', JSON.stringify(parsed.households))
+        localStorage.setItem('ev_points', JSON.stringify(parsed.evCommercial ?? []))
+        localStorage.setItem('hh_filename', file.name)
       } catch {
         /* ignore storage errors */
       }

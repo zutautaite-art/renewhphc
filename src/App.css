@@ -704,6 +704,7 @@
   background: #f3f4f6;
   border-color: #9ca3af;
 }
+/* ── Mobile responsive layout ── */
 @media (max-width: 768px) {
   .main {
     flex-direction: column;
