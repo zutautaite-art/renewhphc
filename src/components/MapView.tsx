@@ -574,11 +574,21 @@ export function MapView(props: MapViewProps) {
               : String(Math.round(rawNo))
           }
 
+          // pctValue: GeoJSON embedded first, then fall back to uploaded workbook values
+          let pctValue: number | null | undefined = hit?.pctValue
+          if (pctValue == null) {
+            const geogid = String(p._cso_code ?? p.GEOGID ?? p._pub2022 ?? '')
+            for (const alias of aliasIds(geogid)) {
+              const wbHit = m.values?.[alias]
+              if (wbHit?.pctValue != null) { pctValue = wbHit.pctValue; break }
+            }
+          }
+
           return {
             key: m.key,
             label: m.label,
             no:  noDisplay,
-            pct: hit?.pctValue != null ? `${Number(hit.pctValue).toFixed(1)}%` : '—',
+            pct: pctValue != null ? `${Number(pctValue).toFixed(1)}%` : '—',
           }
         })
 
