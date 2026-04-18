@@ -70,6 +70,9 @@ function toPointGeoJson(points: HouseholdRecord[]) {
         fullAddress:  (h as any).fullAddress  ?? h.address ?? '',
         customerType: (h as any).customerType ?? '',
         dotType:      (h as any).dotType      ?? 'red',
+        solar:        h.solar     != null ? String(h.solar)     : '',
+        ev:           h.ev        != null ? String(h.ev)        : '',
+        heat_pump:    h.heat_pump != null ? String(h.heat_pump) : '',
       },
     })),
   }
@@ -283,6 +286,7 @@ export function MapView(props: MapViewProps) {
     x: number; y: number; title: string; county: string
     rows: Array<{ key: string; label: string; no: string; pct: string }>
     simple?: string[]
+    pointRows?: Array<{ label: string; value: string }>
   }
   const [tooltip, setTooltip] = useState<Tooltip | null>(null)
 
@@ -599,7 +603,20 @@ export function MapView(props: MapViewProps) {
       const feature = e.features?.[0]
       if (!feature) return
       const p = (feature.properties ?? {}) as Record<string, unknown>
-      setTooltip({ x: e.point.x + 16, y: e.point.y + 16, title: String(p.fullAddress || (p.dotType === 'yellow' ? 'EV Commercial' : 'Household')), county: '', rows: [], simple: [p.customerType ? String(p.customerType) : ''].filter(Boolean) })
+      const title = String(p.fullAddress || (p.dotType === 'yellow' ? 'EV Commercial' : 'Household'))
+      const yesNo = (val: unknown) => {
+        const s = String(val ?? '').trim().toLowerCase()
+        if (s === 'yes' || s === 'true') return '✅ Yes'
+        if (s === 'no'  || s === 'false') return '❌ No'
+        return '❓ Unknown'
+      }
+      const tableRows = [
+        { label: 'Solar',      value: yesNo(p.solar) },
+        { label: 'EV Charger', value: yesNo(p.ev) },
+        { label: 'Heat Pump',  value: yesNo(p.heat_pump) },
+      ]
+      const simple: string[] = []
+      setTooltip({ x: e.point.x + 16, y: e.point.y + 16, title, county: '', rows: [], simple, pointRows: tableRows })
     }
 
     const clear = () => setTooltip(null)
@@ -685,6 +702,18 @@ export function MapView(props: MapViewProps) {
               {(tooltip.simple ?? []).map((line, i) => (
                 <div key={i} className="mapHoverTooltipLine">{line}</div>
               ))}
+              {(tooltip.pointRows ?? []).length > 0 && (
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, marginTop: 4 }}>
+                  <tbody>
+                    {(tooltip.pointRows ?? []).map((row, i) => (
+                      <tr key={i}>
+                        <td style={{ padding: '2px 12px 2px 0', color: '#6b7280', whiteSpace: 'nowrap' }}>{row.label}</td>
+                        <td style={{ padding: '2px 0', whiteSpace: 'nowrap' }}>{row.value}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </>
           )}
         </div>
