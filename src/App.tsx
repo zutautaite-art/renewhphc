@@ -274,7 +274,7 @@ export default function App() {
                 onDataOnChange={setEvCommercialLayerOn}
                 dataAvailable={loadedData ? (loadedData.evCommercial?.length ?? 0) > 0 : undefined}
               >
-                <strong>EV Commercial</strong>
+                <strong>Commercial</strong>
               </MeasureRow>
             </FilterSection>
 
