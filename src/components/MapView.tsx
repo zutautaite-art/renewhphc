@@ -73,6 +73,7 @@ function toPointGeoJson(points: HouseholdRecord[]) {
         solar:        h.solar     != null ? String(h.solar)     : '',
         ev:           h.ev        != null ? String(h.ev)        : '',
         heat_pump:    h.heat_pump != null ? String(h.heat_pump) : '',
+        open_hours:   (h as any).open_hours ?? '',
       },
     })),
   }
