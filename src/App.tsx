@@ -2,7 +2,7 @@
 import './App.css'
 import { Fragment, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react'
 import * as XLSX from 'xlsx'
-import { saveWorkbook, loadWorkbook, type StoredWorkbook } from './db'
+import { saveWorkbook, loadWorkbook } from './db'
 import type { FeatureCollection } from 'geojson'
 import { FilterSection } from './components/FilterSection'
 import { InformationTable } from './components/InformationTable'
@@ -24,7 +24,7 @@ const DEFAULT_FILTER_CONFIG: FilterConfigRow[] = [
   { group: 'Persona', key: 'families_children', label: 'Families with Children', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'couple_children_no', mapField: 'couple_children_pct' },
   { group: 'Persona', key: 'education_degree_plus', label: 'Education (Bachelors+)', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'degree_plus_no', mapField: 'degree_plus_pct' },
   { group: 'Persona', key: 'income_profile', label: 'Income', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'income_no', mapField: 'income_pct' },
-  { group: 'Persona', key: 'phobal_score', label: 'Phobal', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'phobal_score', mapField: 'phobal_score' },
+  { group: 'Persona', key: 'phobal_score', label: 'Phobal', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'phobal_score', mapField: '' },
   { group: 'Persona', key: 'occupation_manager_professional', label: 'Occupation (Managers & Professionals)', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'manager_professional_no', mapField: 'manager_professional_pct' },
   { group: 'Metrics', key: 'electric_heating', label: 'Electric Heating', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'electric_no', mapField: 'electric_pct' },
   { group: 'Metrics', key: 'solar_panels', label: 'Solar', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'solar_no', mapField: 'solar_pct' },
@@ -73,7 +73,7 @@ export default function App() {
 
   // ── Restore from IndexedDB on mount ────────────────────────────────────────
   useEffect(() => {
-    loadWorkbook().then((stored: StoredWorkbook | null) => {
+    loadWorkbook().then((stored) => {
       if (!stored) return
       try {
         const wb     = XLSX.read(stored.buffer, { type: 'array' })
@@ -179,7 +179,7 @@ export default function App() {
       setUploadError(null)
       setLoadedFileName(file.name)
       // Save raw bytes to IndexedDB — restored on next page load
-      saveWorkbook(file.name, buffer).catch((e: unknown) => console.warn('IndexedDB save failed:', e))
+      saveWorkbook(file.name, buffer).catch((e) => console.warn('IndexedDB save failed:', e))
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Failed to read workbook')
     }
