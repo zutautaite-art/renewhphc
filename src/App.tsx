@@ -23,9 +23,8 @@ const DEFAULT_FILTER_CONFIG: FilterConfigRow[] = [
   { group: 'Persona', key: 'age_35_44', label: 'Age 35–44', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'age_35_44_no', mapField: 'age_35_44_pct' },
   { group: 'Persona', key: 'families_children', label: 'Families with Children', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'couple_children_no', mapField: 'couple_children_pct' },
   { group: 'Persona', key: 'education_degree_plus', label: 'Education (Bachelors+)', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'degree_plus_no', mapField: 'degree_plus_pct' },
-  { group: 'Persona', key: 'income_profile', label: 'Income', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'income_no', mapField: 'income_pct' },
-  { group: 'Persona', key: 'phobal_score', label: 'Phobal', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'phobal_score', mapField: '' },
   { group: 'Persona', key: 'occupation_manager_professional', label: 'Occupation (Managers & Professionals)', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'manager_professional_no', mapField: 'manager_professional_pct' },
+  { group: 'Persona', key: 'phobal_score', label: 'Pobal HP Index', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'phobal_score', mapField: '' },
   { group: 'Metrics', key: 'electric_heating', label: 'Electric Heating', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'electric_no', mapField: 'electric_pct' },
   { group: 'Metrics', key: 'solar_panels', label: 'Solar', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'solar_no', mapField: 'solar_pct' },
   { group: 'Metrics', key: 'ev_households', label: 'EV Households', kind: 'small_area_metric', status: 'Use', source: '', rawField: 'ev_households_no', mapField: 'ev_households_pct' },
@@ -65,6 +64,7 @@ export default function App() {
   const [statsReadyAt, setStatsReadyAt] = useState(0)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [dragOver, setDragOver] = useState(false)
+  const [pobalInfoOpen, setPobalInfoOpen] = useState(false)
 
   const hasWorkbookMetrics = useMemo(
     () => !!(loadedData && Object.keys(loadedData.metricsByKey).length > 0),
@@ -118,8 +118,7 @@ export default function App() {
 
   const countyOptions = useMemo(() => laRows.map((r) => ({ value: r.localAuthority, label: r.localAuthority })), [laRows])
 
-  const effectiveFilterConfig =
-    loadedData?.filterConfig?.length ? loadedData.filterConfig : DEFAULT_FILTER_CONFIG
+  const effectiveFilterConfig = DEFAULT_FILTER_CONFIG
 
   const metricFilters = useMemo(
     () => effectiveFilterConfig.filter((f) => isUsableMetricFilter(f) && (f.kind === 'small_area_metric' || f.kind === 'town_metric')),
@@ -351,15 +350,31 @@ export default function App() {
 
                 <FilterSection sectionId={`group-${group}`} titleBold={`${group}:`}>
                   {rows.map((f) => (
-                    <MeasureRow
-                      key={f.key}
-                      switchId={`metric-${f.key}`}
-                      dataOn={!!activeMetricKeys[f.key]}
-                      onDataOnChange={(on) => setMetric(f.key, on)}
-                      dataAvailable={metricAvailable(f.key)}
-                    >
-                      <strong>{f.label}</strong>
-                    </MeasureRow>
+                    <Fragment key={f.key}>
+                      <MeasureRow
+                        switchId={`metric-${f.key}`}
+                        dataOn={!!activeMetricKeys[f.key]}
+                        onDataOnChange={(on) => setMetric(f.key, on)}
+                        dataAvailable={metricAvailable(f.key)}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <strong>{f.label}</strong>
+                          {f.key === 'phobal_score' && (
+                            <button
+                              type="button"
+                              onClick={() => setPobalInfoOpen(o => !o)}
+                              style={{ background: 'none', border: '1px solid #d1d5db', borderRadius: '50%', width: 16, height: 16, fontSize: 10, cursor: 'pointer', color: '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, padding: 0, lineHeight: 1 }}
+                              title="About Pobal HP Index"
+                            >i</button>
+                          )}
+                        </div>
+                      </MeasureRow>
+                      {f.key === 'phobal_score' && pobalInfoOpen && (
+                        <div style={{ fontSize: 11, color: '#6b7280', background: '#f9fafb', border: '1px solid #f3f4f6', borderRadius: 4, padding: '8px 10px', margin: '2px 0 6px', lineHeight: 1.5 }}>
+                          A composite deprivation score per small area based on Census 2022. Combines education, employment, age dependency, social class and lone parent indicators. Developed by Haase &amp; Pratschke for Pobal. Negative scores indicate deprivation, positive scores indicate affluence.
+                        </div>
+                      )}
+                    </Fragment>
                   ))}
                 </FilterSection>
               </Fragment>
@@ -434,6 +449,19 @@ export default function App() {
           boundarySmallAreaLinesVisible={boundarySmallAreaLinesOn}
           evCommercial={loadedData?.evCommercial ?? []}
           evCommercialLayerVisible={evCommercialLayerOn}
+          towns={towns.map(t => {
+            const la = t.localAuthority ?? ''
+            const toTitle = (s: string) => s.toLowerCase().replace(/(?:^|[-\s])\w/g, c => c.toUpperCase())
+            let county = la
+            if (/city and county council/i.test(la)) {
+              county = 'Co. ' + toTitle(la.replace(/city and county council/i, '').trim())
+            } else if (/county council/i.test(la)) {
+              county = 'Co. ' + toTitle(la.replace(/county council/i, '').trim())
+            } else if (/city council/i.test(la)) {
+              county = toTitle(la.replace(/city council/i, '').trim()) + ' City'
+            }
+            return { label: t.label, county }
+          })}
         />
       </main>
     </div>

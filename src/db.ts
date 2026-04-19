@@ -1,10 +1,26 @@
 const DB_NAME = 'renewhphc'
-const DB_VERSION = 1
+const DB_VERSION = 2
 const STORE = 'workbook'
+const PIN_STORE = 'pins'
 
 export type StoredWorkbook = {
   name: string
   buffer: ArrayBuffer
+}
+
+export type DroppedPin = {
+  id: string
+  lat: number
+  lng: number
+  type: 'Household' | 'Business'
+  houseNo: string
+  street: string
+  town: string
+  county: string
+  solar: 'Yes' | 'No' | 'Unknown'
+  ev: 'Yes' | 'No' | 'Unknown'
+  heatPump: 'Yes' | 'No' | 'Unknown'
+  createdAt: number
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -14,6 +30,9 @@ function openDb(): Promise<IDBDatabase> {
       const db = req.result
       if (!db.objectStoreNames.contains(STORE)) {
         db.createObjectStore(STORE, { keyPath: 'id' })
+      }
+      if (!db.objectStoreNames.contains(PIN_STORE)) {
+        db.createObjectStore(PIN_STORE, { keyPath: 'id' })
       }
     }
     req.onsuccess = () => resolve(req.result)
@@ -33,7 +52,6 @@ export async function saveWorkbook(name: string, buffer: ArrayBuffer): Promise<v
   const db = await openDb()
   const tx = db.transaction(STORE, 'readwrite')
   const store = tx.objectStore(STORE)
-  // Clone buffer so callers can reuse the original ArrayBuffer safely.
   const payload = { id: 1, name, buffer: buffer.slice(0) }
   await reqToPromise(store.put(payload))
   await new Promise<void>((resolve, reject) => {
@@ -57,4 +75,45 @@ export async function loadWorkbook(): Promise<StoredWorkbook | null> {
   } catch {
     return null
   }
+}
+
+/** Save a new dropped pin. */
+export async function savePinToDb(pin: DroppedPin): Promise<void> {
+  try {
+    const db = await openDb()
+    const tx = db.transaction(PIN_STORE, 'readwrite')
+    await reqToPromise(tx.objectStore(PIN_STORE).put(pin))
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+    db.close()
+  } catch (e) { console.warn('savePinToDb failed:', e) }
+}
+
+/** Load all dropped pins. */
+export async function loadAllPinsFromDb(): Promise<DroppedPin[]> {
+  try {
+    const db = await openDb()
+    const tx = db.transaction(PIN_STORE, 'readonly')
+    const result = await reqToPromise(tx.objectStore(PIN_STORE).getAll()) as DroppedPin[]
+    db.close()
+    return result ?? []
+  } catch { return [] }
+}
+
+/** Update solar/ev/heatPump fields of an existing pin. */
+export async function updatePinInDb(id: string, updates: Partial<DroppedPin>): Promise<void> {
+  try {
+    const db = await openDb()
+    const tx = db.transaction(PIN_STORE, 'readwrite')
+    const store = tx.objectStore(PIN_STORE)
+    const existing = await reqToPromise(store.get(id)) as DroppedPin | undefined
+    if (existing) await reqToPromise(store.put({ ...existing, ...updates }))
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+    db.close()
+  } catch (e) { console.warn('updatePinInDb failed:', e) }
 }

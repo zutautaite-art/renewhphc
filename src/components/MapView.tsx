@@ -12,8 +12,18 @@ import { CSO_BOUNDARY_ATTRIBUTION, emptyFeatureCollection } from '../cso/arcgisG
 import { bboxForBuaCode, bboxForCountyLa, normGeoProp } from '../cso/boundaryLookup'
 import { geometryBBox } from '../geoBounds'
 import type { HouseholdRecord } from '../types/households'
+import { type DroppedPin, savePinToDb, loadAllPinsFromDb, updatePinInDb } from '../db'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+type YesNoUnknown = 'Yes' | 'No' | 'Unknown'
+type PinTownOption = { label: string; county: string }
+type PinFormState = {
+  type: 'Household' | 'Business'
+  houseNo: string; street: string; town: string; county: string
+  solar: YesNoUnknown; ev: YesNoUnknown; heatPump: YesNoUnknown
+}
+const defaultPinForm = (): PinFormState => ({ type: 'Household', houseNo: '', street: '', town: '', county: '', solar: 'Unknown', ev: 'Unknown', heatPump: 'Unknown' })
 
 type MetricValue = { mapValue: number; pctValue?: number | null; rawValue?: number | string }
 type MetricStats  = { mean: number; std: number }
@@ -43,6 +53,7 @@ export type MapViewProps = {
   onGeoJsonReady?: () => void
   /** After embedded-metric stats are ready; parent can bump deps so `activeMetrics` re-evaluates. */
   onStatsReady?: () => void
+  towns?: PinTownOption[]
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -283,6 +294,18 @@ export function MapView(props: MapViewProps) {
   const [statsReady,  setStatsReady]  = useState(false)
   const [legendOpen, setLegendOpen] = useState(true)
 
+  // ── Pin mode state ─────────────────────────────────────────────────────────
+  const [pinModeActive, setPinModeActive] = useState(false)
+  const [droppedPins, setDroppedPins] = useState<DroppedPin[]>([])
+  const [newPinCoords, setNewPinCoords] = useState<{ lat: number; lng: number } | null>(null)
+  const [pinForm, setPinForm] = useState<PinFormState>(defaultPinForm())
+  const [townSearch, setTownSearch] = useState('')
+  const [townDropdownOpen, setTownDropdownOpen] = useState(false)
+  const [editingPinId, setEditingPinId] = useState<string | null>(null)
+  const [editForm, setEditForm] = useState<{ solar: YesNoUnknown; ev: YesNoUnknown; heatPump: YesNoUnknown }>({ solar: 'Unknown', ev: 'Unknown', heatPump: 'Unknown' })
+  const pinModeRef = useRef(false)
+  const droppedPinsRef = useRef<DroppedPin[]>([])
+
   type Tooltip = {
     x: number; y: number; title: string; county: string
     edName?: string; saCode?: string
@@ -314,6 +337,78 @@ export function MapView(props: MapViewProps) {
   useEffect(() => { saDataRef.current          = saData          }, [saData])
   useEffect(() => { householdsGeoRef.current   = householdsGeo   }, [householdsGeo])
   useEffect(() => { evCommercialGeoRef.current = evCommercialGeo }, [evCommercialGeo])
+
+  // ── Pin mode effects ───────────────────────────────────────────────────────
+  useEffect(() => { loadAllPinsFromDb().then(setDroppedPins).catch(() => {}) }, [])
+  useEffect(() => { pinModeRef.current = pinModeActive }, [pinModeActive])
+  useEffect(() => { droppedPinsRef.current = droppedPins }, [droppedPins])
+
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (droppedPinsRef.current.length > 0) { e.preventDefault(); e.returnValue = '' }
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map?.isStyleLoaded()) return
+    const src = map.getSource('dropped-pins') as maplibregl.GeoJSONSource | undefined
+    if (!src) return
+    src.setData({ type: 'FeatureCollection', features: droppedPins.map(p => ({ type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: [p.lng, p.lat] }, properties: { id: p.id, pinType: p.type } })) })
+  }, [droppedPins])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    if (pinModeActive) {
+      map.getCanvas().style.cursor = 'crosshair'
+    } else {
+      map.getCanvas().style.cursor = ''
+    }
+  }, [pinModeActive])
+
+  // ── Pin mode handlers ──────────────────────────────────────────────────────
+  function handleSavePin() {
+    if (!newPinCoords) return
+    const pin: DroppedPin = {
+      id: `pin_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      lat: newPinCoords.lat, lng: newPinCoords.lng,
+      type: pinForm.type, houseNo: pinForm.houseNo, street: pinForm.street,
+      town: pinForm.town, county: pinForm.county,
+      solar: pinForm.solar, ev: pinForm.ev, heatPump: pinForm.heatPump,
+      createdAt: Date.now(),
+    }
+    setDroppedPins(prev => [...prev, pin])
+    savePinToDb(pin).catch(e => console.warn('savePinToDb failed:', e))
+    setNewPinCoords(null)
+  }
+
+  function handleSaveEdit() {
+    if (!editingPinId) return
+    setDroppedPins(prev => prev.map(p => p.id === editingPinId ? { ...p, ...editForm } : p))
+    updatePinInDb(editingPinId, editForm).catch(e => console.warn('updatePinInDb failed:', e))
+    setEditingPinId(null)
+  }
+
+  function downloadPinsCSV() {
+    if (droppedPins.length === 0) return
+    const header = ['customer_type', 'dot_type', 'Full_Address', 'latitude_clean', 'longitude_clean', 'solar', 'ev', 'heat_pump', 'coord_issue']
+    const rows = droppedPins.map(p => {
+      const customerType = p.type === 'Household' ? 'households' : 'commercial'
+      const dotType = p.type === 'Household' ? 'red' : 'yellow'
+      const fullAddress = [p.houseNo, p.street, p.town, p.county].filter(Boolean).join(', ')
+      return [customerType, dotType, fullAddress, String(p.lat), String(p.lng), p.solar, p.ev, p.heatPump, '']
+    })
+    const csv = [header, ...rows].map(r => r.map(c => `"${c.replace(/"/g, '""')}"`).join(',')).join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = `pins_${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(a); a.click(); document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
 
   // ── Load GeoJSON once ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -446,6 +541,56 @@ export function MapView(props: MapViewProps) {
       // Point layers
       map.addLayer({ id: 'households-circle',    type: 'circle', source: 'households',    paint: { 'circle-color': '#ef4444', 'circle-radius': ['interpolate',['linear'],['zoom'],6,1.6,10,3.5,14,5.5], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1 } })
       map.addLayer({ id: 'ev-commercial-circle', type: 'circle', source: 'ev-commercial', paint: { 'circle-color': '#eab308', 'circle-radius': ['interpolate',['linear'],['zoom'],6,1.6,10,3.5,14,5.5], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1 } })
+
+      // Dropped pins layer
+      map.addSource('dropped-pins', { type: 'geojson', data: emptyFeatureCollection() })
+      map.addLayer({ id: 'dropped-pins-outer', type: 'circle', source: 'dropped-pins', paint: { 'circle-color': '#ef4444', 'circle-radius': ['interpolate', ['linear'], ['zoom'], 6, 1.6, 10, 3.5, 14, 5.5], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1 } })
+      map.addLayer({ id: 'dropped-pins-cross', type: 'symbol', source: 'dropped-pins', layout: { 'text-field': '+', 'text-size': ['interpolate', ['linear'], ['zoom'], 6, 5, 10, 9, 14, 13], 'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'], 'text-anchor': 'center', 'text-allow-overlap': true }, paint: { 'text-color': '#ffffff' } })
+
+      // Seed dropped pins if already loaded
+      if (droppedPinsRef.current.length > 0) {
+        ;(map.getSource('dropped-pins') as maplibregl.GeoJSONSource).setData({ type: 'FeatureCollection', features: droppedPinsRef.current.map(p => ({ type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: [p.lng, p.lat] }, properties: { id: p.id, pinType: p.type } })) })
+      }
+
+      // Map click handler for pin mode
+      map.on('click', (e) => {
+        if (!pinModeRef.current) return
+        const features = map.queryRenderedFeatures(e.point, { layers: ['dropped-pins-outer'] })
+        if (features.length > 0) {
+          const pinId = String(features[0].properties?.id ?? '')
+          const pin = droppedPinsRef.current.find(p => p.id === pinId)
+          if (pin) {
+            setEditingPinId(pin.id)
+            setEditForm({ solar: pin.solar, ev: pin.ev, heatPump: pin.heatPump })
+            setNewPinCoords(null)
+            return
+          }
+        }
+        // Auto-fill town + county from map layers at click point
+        const saFeats = map.queryRenderedFeatures(e.point, { layers: ['cso-sa-fill'] })
+        const buaFeats = map.queryRenderedFeatures(e.point, { layers: ['cso-bua-fill'] })
+        const toTitle = (s: string) => s.toLowerCase().replace(/(?:^|[\s-])\w/g, (c: string) => c.toUpperCase())
+        let autoCounty = ''
+        let autoTown = ''
+        if (saFeats.length > 0) {
+          const sp = saFeats[0].properties ?? {}
+          const raw = String(sp.COUNTY_ENGLISH ?? sp.COUNTY ?? '').trim()
+          if (raw) autoCounty = 'Co. ' + toTitle(raw)
+        }
+        if (buaFeats.length > 0) {
+          const bp = buaFeats[0].properties ?? {}
+          const rawTown = String(bp.BUA_NAME ?? bp.GEOGDESC ?? bp.NAME ?? '').trim()
+          if (rawTown) autoTown = toTitle(rawTown)
+        }
+        setNewPinCoords({ lat: e.lngLat.lat, lng: e.lngLat.lng })
+        const form = defaultPinForm()
+        form.county = autoCounty
+        form.town = autoTown
+        setPinForm(form)
+        setTownSearch(autoTown)
+        setTownDropdownOpen(false)
+        setEditingPinId(null)
+      })
 
       // Cursor styles
       map.on('mouseenter', 'cso-sa-fill',          () => { map.getCanvas().style.cursor = 'crosshair' })
@@ -641,6 +786,30 @@ export function MapView(props: MapViewProps) {
     }
     map.on('mousemove',  'cso-sa-fill',          onSaMove)
     map.on('mouseleave', 'cso-sa-fill',          onSaLeave)
+    const onDroppedPinMove = (e: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
+      const feature = e.features?.[0]
+      if (!feature) return
+      const pinId = String(feature.properties?.id ?? '')
+      const pin = droppedPinsRef.current.find(p => p.id === pinId)
+      if (!pin) return
+      const address = [pin.houseNo, pin.street, pin.town, pin.county].filter(Boolean).join(', ')
+      const yesNo = (v: string) => v === 'Yes' ? '✅ Yes' : v === 'No' ? '❌ No' : '❓ Unknown'
+      setTooltip({
+        x: e.point.x + 16, y: e.point.y + 16,
+        title: address || 'Dropped pin',
+        county: '', edName: pin.type, saCode: 'droppedpin', rows: [],
+        simple: [],
+        pointRows: [
+          { label: 'Solar', value: yesNo(pin.solar) },
+          { label: 'EV', value: yesNo(pin.ev) },
+          { label: 'Heat Pump', value: yesNo(pin.heatPump) },
+        ],
+      })
+    }
+    map.on('mouseenter', 'dropped-pins-outer', () => { map.getCanvas().style.cursor = 'pointer' })
+    map.on('mouseleave', 'dropped-pins-outer', () => { map.getCanvas().style.cursor = pinModeRef.current ? 'crosshair' : '' })
+    map.on('mousemove',  'dropped-pins-outer', onDroppedPinMove)
+    map.on('mouseleave', 'dropped-pins-outer', clear)
     map.on('mousemove',  'households-circle',    onPointMove)
     map.on('mouseleave', 'households-circle',    clear)
     map.on('mousemove',  'ev-commercial-circle', onPointMove)
@@ -652,6 +821,8 @@ export function MapView(props: MapViewProps) {
       map.off('mouseleave', 'households-circle',    clear)
       map.off('mousemove',  'ev-commercial-circle', onPointMove)
       map.off('mouseleave', 'ev-commercial-circle', clear)
+      map.off('mousemove',  'dropped-pins-outer',   onDroppedPinMove)
+      map.off('mouseleave', 'dropped-pins-outer',   clear)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -725,6 +896,9 @@ export function MapView(props: MapViewProps) {
               {tooltip.saCode === 'household' && (
                 <div style={{ fontSize: 12, color: '#15803d', fontWeight: 700, marginBottom: 4 }}>Household</div>
               )}
+              {tooltip.saCode === 'droppedpin' && (
+                <div style={{ fontSize: 12, color: '#dc2626', fontWeight: 700, marginBottom: 4 }}>{tooltip.edName}</div>
+              )}
               <div className="mapHoverTooltipTitle">{tooltip.title}</div>
               {(tooltip.simple ?? []).map((line, i) => (
                 <div key={i} className="mapHoverTooltipLine">{line}</div>
@@ -745,6 +919,124 @@ export function MapView(props: MapViewProps) {
           )}
         </div>
       )}
+
+      {/* Pin mode button + CSV button */}
+      <div style={{ position: 'absolute', top: 10, left: 10, zIndex: 15, display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <button
+          onClick={() => { setPinModeActive(a => !a); setNewPinCoords(null); setEditingPinId(null) }}
+          style={{ padding: '6px 12px', borderRadius: 6, border: `1px solid ${pinModeActive ? '#15803d' : '#d1d5db'}`, background: pinModeActive ? '#15803d' : '#fff', color: pinModeActive ? '#fff' : '#374151', fontSize: 12, fontWeight: 500, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, boxShadow: '0 1px 4px rgba(0,0,0,0.15)', whiteSpace: 'nowrap' }}
+        >
+          <svg width="11" height="14" viewBox="0 0 11 14" fill="none"><circle cx="5.5" cy="5" r="3" stroke="currentColor" strokeWidth="1.4"/><path d="M5.5 8 L5.5 13" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+          {pinModeActive ? 'Pin mode on' : 'Enable pin mode'}
+        </button>
+        {droppedPins.length > 0 && (
+          <button onClick={downloadPinsCSV}
+            style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid #d1d5db', background: '#fff', color: '#374151', fontSize: 12, fontWeight: 500, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, boxShadow: '0 1px 4px rgba(0,0,0,0.15)', whiteSpace: 'nowrap' }}>
+            ↓ Download pins ({droppedPins.length})
+          </button>
+        )}
+      </div>
+
+      {/* New pin form */}
+      {newPinCoords && (
+        <div style={{ position: 'absolute', inset: 0, zIndex: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.25)' }}>
+          <div style={{ background: '#fff', borderRadius: 10, padding: 16, width: 300, maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 4px 20px rgba(0,0,0,0.22)' }}>
+            <div style={{ fontWeight: 600, fontSize: 14, color: '#111827', borderBottom: '1px solid #f3f4f6', paddingBottom: 8, marginBottom: 12 }}>New pin</div>
+            <div style={{ marginBottom: 10 }}>
+              <label style={{ fontSize: 11, color: '#6b7280', display: 'block', marginBottom: 4 }}>Type</label>
+              <select value={pinForm.type} onChange={e => setPinForm(f => ({ ...f, type: e.target.value as 'Household' | 'Business' }))} style={{ width: '100%', fontSize: 13, padding: '6px 8px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', color: '#111827', boxSizing: 'border-box' }}>
+                <option value="Household">Household</option>
+                <option value="Business">Business</option>
+              </select>
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+              <div style={{ flex: 1 }}>
+                <label style={{ fontSize: 11, color: '#6b7280', display: 'block', marginBottom: 4 }}>House No</label>
+                <input type="text" value={pinForm.houseNo} onChange={e => setPinForm(f => ({ ...f, houseNo: e.target.value }))} placeholder="e.g. 14" style={{ width: '100%', fontSize: 13, padding: '6px 8px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', color: '#111827', boxSizing: 'border-box' }} />
+              </div>
+              <div style={{ flex: 2 }}>
+                <label style={{ fontSize: 11, color: '#6b7280', display: 'block', marginBottom: 4 }}>Street</label>
+                <input type="text" value={pinForm.street} onChange={e => setPinForm(f => ({ ...f, street: e.target.value }))} placeholder="Street name" style={{ width: '100%', fontSize: 13, padding: '6px 8px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', color: '#111827', boxSizing: 'border-box' }} />
+              </div>
+            </div>
+            <div style={{ marginBottom: 10, position: 'relative' }}>
+              <label style={{ fontSize: 11, color: '#6b7280', display: 'block', marginBottom: 4 }}>Town</label>
+              <input type="text" value={townSearch} onChange={e => { setTownSearch(e.target.value); setTownDropdownOpen(true); if (!e.target.value) setPinForm(f => ({ ...f, town: '', county: '' })) }} onFocus={() => setTownDropdownOpen(true)} placeholder="Type to search..." style={{ width: '100%', fontSize: 13, padding: '6px 8px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', color: '#111827', boxSizing: 'border-box' }} />
+              {townDropdownOpen && townSearch.length >= 1 && (
+                <div style={{ position: 'absolute', left: 0, right: 0, top: '100%', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 6, zIndex: 30, maxHeight: 160, overflowY: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.12)' }}>
+                  {(props.towns ?? []).filter(t => t.label.toLowerCase().includes(townSearch.toLowerCase())).slice(0, 8).map(t => (
+                    <div key={t.label + t.county} onMouseDown={() => { setPinForm(f => ({ ...f, town: t.label, county: t.county })); setTownSearch(t.label); setTownDropdownOpen(false) }} style={{ padding: '6px 10px', fontSize: 13, cursor: 'pointer', color: '#111827', borderBottom: '1px solid #f9fafb' }} onMouseOver={e => (e.currentTarget.style.background = '#f9fafb')} onMouseOut={e => (e.currentTarget.style.background = '#fff')}>
+                      {t.label} <span style={{ color: '#9ca3af', fontSize: 11 }}>{t.county}</span>
+                    </div>
+                  ))}
+                  {(props.towns ?? []).filter(t => t.label.toLowerCase().includes(townSearch.toLowerCase())).length === 0 && (
+                    <div style={{ padding: '6px 10px', fontSize: 13, color: '#9ca3af' }}>No towns found</div>
+                  )}
+                </div>
+              )}
+            </div>
+            <div style={{ marginBottom: 10 }}>
+              <label style={{ fontSize: 11, color: '#6b7280', display: 'block', marginBottom: 4 }}>County</label>
+              <input type="text" value={pinForm.county} readOnly style={{ width: '100%', fontSize: 13, padding: '6px 8px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#f9fafb', color: '#6b7280', boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 14 }}>
+              {(['solar', 'ev', 'heatPump'] as const).map(field => (
+                <div key={field}>
+                  <label style={{ fontSize: 11, color: '#6b7280', display: 'block', marginBottom: 4 }}>{field === 'heatPump' ? 'Heat pump' : field === 'ev' ? 'EV' : 'Solar'}</label>
+                  <select value={pinForm[field]} onChange={e => setPinForm(f => ({ ...f, [field]: e.target.value as YesNoUnknown }))} style={{ width: '100%', fontSize: 13, padding: '6px 4px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', color: '#111827' }}>
+                    <option>Unknown</option><option>Yes</option><option>No</option>
+                  </select>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => setNewPinCoords(null)} style={{ flex: 1, padding: '8px', borderRadius: 6, border: '1px solid #dc2626', background: 'transparent', color: '#dc2626', fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 2L10 10M10 2L2 10" stroke="#dc2626" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                Cancel
+              </button>
+              <button onClick={handleSavePin} style={{ flex: 1, padding: '8px', borderRadius: 6, border: '1px solid #15803d', background: 'transparent', color: '#15803d', fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 6L5 9L10 3" stroke="#15803d" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                Save pin
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit pin form */}
+      {editingPinId && (() => {
+        const pin = droppedPins.find(p => p.id === editingPinId)
+        if (!pin) return null
+        return (
+          <div style={{ position: 'absolute', inset: 0, zIndex: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.25)' }}>
+            <div style={{ background: '#fff', borderRadius: 10, padding: 16, width: 280, boxShadow: '0 4px 20px rgba(0,0,0,0.22)' }}>
+              <div style={{ fontWeight: 600, fontSize: 14, color: '#111827', borderBottom: '1px solid #f3f4f6', paddingBottom: 8, marginBottom: 8 }}>Edit pin</div>
+              <div style={{ fontSize: 13, color: '#374151', marginBottom: 2 }}>{[pin.houseNo, pin.street, pin.town].filter(Boolean).join(' ')}</div>
+              <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 12 }}>{pin.type}{pin.county ? ` · ${pin.county}` : ''}</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 14 }}>
+                {(['solar', 'ev', 'heatPump'] as const).map(field => (
+                  <div key={field}>
+                    <label style={{ fontSize: 11, color: '#6b7280', display: 'block', marginBottom: 4 }}>{field === 'heatPump' ? 'Heat pump' : field === 'ev' ? 'EV' : 'Solar'}</label>
+                    <select value={editForm[field]} onChange={e => setEditForm(f => ({ ...f, [field]: e.target.value as YesNoUnknown }))} style={{ width: '100%', fontSize: 13, padding: '6px 4px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', color: '#111827' }}>
+                      <option>Unknown</option><option>Yes</option><option>No</option>
+                    </select>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => setEditingPinId(null)} style={{ flex: 1, padding: '8px', borderRadius: 6, border: '1px solid #dc2626', background: 'transparent', color: '#dc2626', fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                  <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 2L10 10M10 2L2 10" stroke="#dc2626" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                  No change
+                </button>
+                <button onClick={handleSaveEdit} style={{ flex: 1, padding: '8px', borderRadius: 6, border: '1px solid #15803d', background: 'transparent', color: '#15803d', fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                  <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 6L5 9L10 3" stroke="#15803d" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Colour legend */}
       <div style={{
