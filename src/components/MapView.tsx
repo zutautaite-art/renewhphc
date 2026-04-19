@@ -285,6 +285,7 @@ export function MapView(props: MapViewProps) {
 
   type Tooltip = {
     x: number; y: number; title: string; county: string
+    edName?: string; saCode?: string
     rows: Array<{ key: string; label: string; no: string; pct: string }>
     simple?: string[]
     pointRows?: Array<{ label: string; value: string }>
@@ -597,14 +598,20 @@ export function MapView(props: MapViewProps) {
           }
         })
 
-      setTooltip({ x: e.point.x + 16, y: e.point.y + 16, title: String(p._cso_code ?? p.GEOGID ?? ''), county: String(p.COUNTY ?? ''), rows })
+      const rawGeogid = String(p._cso_code ?? p.GEOGID ?? p._pub2022 ?? '')
+      const saCode = rawGeogid.replace(/^[A-Za-z]/, '')
+      const edName = String(p.ED_Name ?? p.GEOGDESC ?? '')
+      const county = String(p.COUNTY ?? '')
+      setTooltip({ x: e.point.x + 16, y: e.point.y + 16, title: rawGeogid, saCode, county, edName, rows })
     }
 
     const onPointMove = (e: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
       const feature = e.features?.[0]
       if (!feature) return
       const p = (feature.properties ?? {}) as Record<string, unknown>
-      const title = String(p.fullAddress || (p.dotType === 'yellow' ? 'EV Commercial' : 'Household'))
+      const isCommercial = p.dotType === 'yellow'
+      const dotLabel = isCommercial ? 'Commercial' : 'Household'
+      const title = String(p.fullAddress || dotLabel)
       const yesNo = (val: unknown) => {
         const s = String(val ?? '').trim().toLowerCase()
         if (s === 'yes' || s === 'true') return '✅ Yes'
@@ -617,7 +624,7 @@ export function MapView(props: MapViewProps) {
         { label: 'Heat Pump',  value: yesNo(p.heat_pump) },
       ]
       const simple: string[] = []
-      setTooltip({ x: e.point.x + 16, y: e.point.y + 16, title, county: '', rows: [], simple, pointRows: tableRows })
+      setTooltip({ x: e.point.x + 16, y: e.point.y + 16, title, county: '', edName: dotLabel, saCode: isCommercial ? 'commercial' : 'household', rows: [], simple, pointRows: tableRows })
     }
 
     const clear = () => setTooltip(null)
@@ -668,10 +675,23 @@ export function MapView(props: MapViewProps) {
         >
           {tooltip.rows.length > 0 || tooltip.county ? (
             <>
-              <div className="mapHoverTooltipTitle">{tooltip.title}</div>
-              {tooltip.county && (
-                <div className="mapHoverTooltipLine" style={{ color: '#6b7280', marginBottom: 4 }}>
-                  {tooltip.county}
+              {(tooltip.edName || tooltip.saCode || tooltip.county) && (
+                <div style={{ display: 'flex', alignItems: 'center', fontSize: 13, marginBottom: 6, whiteSpace: 'nowrap', flexWrap: 'nowrap' }}>
+                  {tooltip.edName && (
+                    <span style={{ color: '#15803d', fontWeight: 700 }}>{tooltip.edName}</span>
+                  )}
+                  {tooltip.edName && tooltip.county && (
+                    <span style={{ color: '#15803d', margin: '0 5px' }}>|</span>
+                  )}
+                  {tooltip.county && (
+                    <span style={{ color: '#15803d', fontWeight: 400 }}>{tooltip.county}</span>
+                  )}
+                  {(tooltip.edName || tooltip.county) && tooltip.saCode && (
+                    <span style={{ color: '#9ca3af', margin: '0 5px' }}>|</span>
+                  )}
+                  {tooltip.saCode && (
+                    <span style={{ color: '#9ca3af', fontWeight: 400 }}>SA: {tooltip.saCode}</span>
+                  )}
                 </div>
               )}
               {tooltip.rows.length > 0 && (
@@ -699,6 +719,12 @@ export function MapView(props: MapViewProps) {
             </>
           ) : (
             <>
+              {tooltip.saCode === 'commercial' && (
+                <div style={{ fontSize: 12, color: '#92400e', fontWeight: 700, marginBottom: 4 }}>Commercial</div>
+              )}
+              {tooltip.saCode === 'household' && (
+                <div style={{ fontSize: 12, color: '#15803d', fontWeight: 700, marginBottom: 4 }}>Household</div>
+              )}
               <div className="mapHoverTooltipTitle">{tooltip.title}</div>
               {(tooltip.simple ?? []).map((line, i) => (
                 <div key={i} className="mapHoverTooltipLine">{line}</div>
