@@ -26,7 +26,7 @@ type PinFormState = {
 const defaultPinForm = (): PinFormState => ({ type: 'Household', houseNo: '', street: '', town: '', county: '', solar: 'Unknown', ev: 'Unknown', heatPump: 'Unknown' })
 
 type MetricValue = { mapValue: number; pctValue?: number | null; rawValue?: number | string }
-type MetricStats  = { mean: number; std: number }
+type MetricStats  = { mean: number; std: number; min: number; max: number }
 
 export type ActiveMetric = {
   key: string
@@ -163,7 +163,9 @@ function computeStatsFromFeatures(
     if (vals.length < 2) continue
     const mean = vals.reduce((s, v) => s + v, 0) / vals.length
     const std  = Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length)
-    if (std > 0) out[key] = { mean, std }
+    const min  = Math.min(...vals)
+    const max  = Math.max(...vals)
+    if (std > 0) out[key] = { mean, std, min, max }
   }
   return out
 }
@@ -219,6 +221,7 @@ function attachCombinedMetric(
       } catch {}
 
       let score = 0, contributing = 0
+      const isSingleMetric = relevant.length === 1
 
       for (const metric of relevant) {
         // Primary: GeoJSON embedded value
@@ -231,12 +234,16 @@ function attachCombinedMetric(
         }
         if (!hit) continue
 
-        // All metrics including Phobal: z-score normalisation
-        // HP_Score (mean≈0, std≈10) maps naturally:
-        //   -20 → z=-2 → score=0 (lightest), 0 → score=0.5, +20 → z=+2 → score=1 (darkest)
         const s = stats[metric.key]
         if (!s) continue
-        score += zNorm(hit.mapValue, s.mean, s.std)
+
+        if (isSingleMetric && s.max > s.min) {
+          // Single metric: linear normalization so _score bands match legend bands exactly
+          score += Math.max(0, Math.min(1, (hit.mapValue - s.min) / (s.max - s.min)))
+        } else {
+          // Multiple metrics: z-score normalization, averaged equally
+          score += zNorm(hit.mapValue, s.mean, s.std)
+        }
         contributing++
       }
 
@@ -266,11 +273,11 @@ function redScoreExpression(): maplibregl.ExpressionSpecification {
     ['<=', ['coalesce', ['to-number', ['get', '_count']], 0], 0], 'rgba(0,0,0,0)',
     [
       'step', ['coalesce', ['to-number', ['get', '_score']], 0],
-      '#fecdd3',        // 0.0–0.2  below average
-      0.2, '#fb7185',   // 0.2–0.4
-      0.4, '#ef4444',   // 0.4–0.6  around average
-      0.6, '#b91c1c',   // 0.6–0.8
-      0.8, '#7f1d1d',   // 0.8–1.0  hotspot
+      '#fde8e6',        // 0.0–0.2  lowest band
+      0.2, '#f9b8b1',   // 0.2–0.4
+      0.4, '#f1948a',   // 0.4–0.6
+      0.6, '#e74c3c',   // 0.6–0.8
+      0.8, '#c0392b',   // 0.8–1.0  highest band
     ],
   ]
 }
@@ -293,6 +300,7 @@ export function MapView(props: MapViewProps) {
   const [saLoading,   setSaLoading]   = useState(true)
   const [statsReady,  setStatsReady]  = useState(false)
   const [legendOpen, setLegendOpen] = useState(true)
+  const [legendNoteOpen, setLegendNoteOpen] = useState(false)
 
   // ── Pin mode state ─────────────────────────────────────────────────────────
   const [pinModeActive, setPinModeActive] = useState(false)
@@ -657,6 +665,28 @@ export function MapView(props: MapViewProps) {
     ;(map.getSource('households')                as maplibregl.GeoJSONSource | undefined)?.setData(householdsGeo)
     ;(map.getSource('ev-commercial')             as maplibregl.GeoJSONSource | undefined)?.setData(evCommercialGeo)
   }, [countiesData, countyLabels, townsData, saData, householdsGeo, evCommercialGeo])
+
+  // ── Update fill colour expression when metrics change ───────────────────────
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !map.isStyleLoaded()) return
+    const colours = ['#c0392b', '#e74c3c', '#f1948a', '#f9b8b1', '#fde8e6']
+    const expr: maplibregl.ExpressionSpecification = [
+      'case',
+      ['!', ['has', '_count']], 'rgba(0,0,0,0)',
+      ['<=', ['coalesce', ['to-number', ['get', '_count']], 0], 0], 'rgba(0,0,0,0)',
+      [
+        'step', ['coalesce', ['to-number', ['get', '_score']], 0],
+        colours[4],
+        0.2, colours[3],
+        0.4, colours[2],
+        0.6, colours[1],
+        0.8, colours[0],
+      ],
+    ]
+    if (map.getLayer('cso-sa-fill'))  map.setPaintProperty('cso-sa-fill',  'fill-color', expr)
+    if (map.getLayer('cso-bua-fill')) map.setPaintProperty('cso-bua-fill', 'fill-color', expr)
+  }, [activeMetrics])
 
   // ── Visibility toggles ────────────────────────────────────────────────────
   useEffect(() => {
@@ -1039,63 +1069,104 @@ export function MapView(props: MapViewProps) {
       })()}
 
       {/* Colour legend */}
-      <div style={{
-        position: 'absolute',
-        bottom: 28,
-        right: 8,
-        zIndex: 10,
-        background: 'rgba(255,255,255,0.95)',
-        borderRadius: 6,
-        boxShadow: '0 1px 4px rgba(0,0,0,0.18)',
-        fontSize: 11,
-        minWidth: 150,
-        userSelect: 'none',
-      }}>
-        {/* Header — always visible, click to collapse */}
-        <div
-          onClick={() => setLegendOpen(o => !o)}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '5px 8px',
-            cursor: 'pointer',
-            fontWeight: 600,
-            color: '#374151',
-            borderBottom: legendOpen ? '1px solid #f3f4f6' : 'none',
-          }}
-        >
-          <span>Potential Index</span>
-          <span style={{ fontSize: 9, marginLeft: 8, color: '#9ca3af' }}>
-            {legendOpen ? '▲' : '▼'}
-          </span>
-        </div>
+      {(() => {
+        const COLOURS = ['#c0392b', '#e74c3c', '#f1948a', '#f9b8b1', '#fde8e6']
+        const saMetrics = activeMetrics.filter(m => m.geography === 'small_area')
+        const isSingle = saMetrics.length === 1
+        const isPobal  = isSingle && saMetrics[0].key === 'phobal_score'
 
-        {/* Body — collapsible */}
-        {legendOpen && (
-          <div style={{ padding: '6px 8px 8px' }}>
-            {[
-              { color: '#7f1d1d', label: 'High Potential' },
-              { color: '#b91c1c', label: 'Above Average' },
-              { color: '#ef4444', label: 'Average' },
-              { color: '#fb7185', label: 'Slightly Below Avg' },
-              { color: '#fecdd3', label: 'Below Average' },
-            ].map(({ color, label }) => (
-              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-                <div style={{
-                  width: 14, height: 14, borderRadius: 2,
-                  background: color, flexShrink: 0,
-                  border: '1px solid rgba(0,0,0,0.08)',
-                }} />
-                <span style={{ color: '#374151' }}>{label}</span>
-              </div>
-            ))}
-            <div style={{ marginTop: 5, color: '#9ca3af', fontSize: 10, borderTop: '1px solid #f3f4f6', paddingTop: 4 }}>
-              Z-score · CSO 2022
+        // Compute actual value ranges for single metric
+        let rangeBands: { color: string; label: string }[] = []
+        if (isSingle && !isPobal) {
+          const key = saMetrics[0].key
+          const vals: number[] = []
+          for (const f of saRaw.features) {
+            try {
+              const p = (f.properties ?? {}) as Record<string, unknown>
+              const m = typeof p._metrics === 'string' ? JSON.parse(p._metrics) : (p._metrics ?? {})
+              const v = m[key]?.mapValue
+              if (v != null && Number.isFinite(v)) vals.push(v)
+            } catch {}
+          }
+          if (vals.length > 0) {
+            vals.sort((a, b) => a - b)
+            const min = Math.round(vals[0])
+            const max = Math.round(vals[vals.length - 1])
+            const step = Math.ceil((max - min) / 5)
+            // 5 equal-width bands from min to max
+            const bands5 = Array.from({ length: 5 }, (_, i) => ({
+              lo: min + i * step,
+              hi: i === 4 ? max : min + (i + 1) * step - 1,
+            }))
+            // Darkest = highest at top
+            rangeBands = COLOURS.map((color, i) => {
+              const b = bands5[4 - i]
+              const label = b.lo === b.hi ? `${b.lo}` : `${b.lo} – ${b.hi}`
+              return { color, label }
+            })
+          }
+        }
+
+        const pobalBands = [
+          { color: '#7f1d1d', label: 'Very Affluent',      range: '+10 to +35' },
+          { color: '#b91c1c', label: 'Above Average',      range: '0 to +10'   },
+          { color: '#ef4444', label: 'Average',            range: '-10 to 0'   },
+          { color: '#fb7185', label: 'Disadvantaged',      range: '-20 to -10' },
+          { color: '#fecdd3', label: 'Very Deprived',      range: '-35 to -20' },
+        ]
+
+        const multiLabels = [
+          { color: '#7f1d1d', label: 'High Potential'      },
+          { color: '#b91c1c', label: 'Above Average'       },
+          { color: '#ef4444', label: 'Average'             },
+          { color: '#fb7185', label: 'Slightly Below Avg'  },
+          { color: '#fecdd3', label: 'Below Average'       },
+        ]
+
+        const title = isPobal ? 'Pobal HP Index' : isSingle ? (saMetrics[0].label ?? 'Legend') : 'Potential Index'
+        const bands = isPobal ? pobalBands.map(b => ({ color: b.color, label: `${b.range}  ${b.label}` })) : isSingle && rangeBands.length > 0 ? rangeBands : multiLabels
+
+        return (
+          <div style={{ position: 'absolute', bottom: 28, right: 8, zIndex: 10, background: 'rgba(255,255,255,0.95)', borderRadius: 6, boxShadow: '0 1px 4px rgba(0,0,0,0.18)', fontSize: 11, minWidth: 160, maxWidth: 220, userSelect: 'none' }}>
+            <div onClick={() => setLegendOpen(o => !o)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '5px 8px', cursor: 'pointer', fontWeight: 600, color: '#374151', borderBottom: legendOpen ? '1px solid #f3f4f6' : 'none' }}>
+              <span>{title}</span>
+              <span style={{ fontSize: 9, marginLeft: 8, color: '#9ca3af' }}>{legendOpen ? '▲' : '▼'}</span>
             </div>
+            {legendOpen && (
+              <div style={{ padding: '6px 8px 8px' }}>
+                {bands.map(({ color, label }) => (
+                  <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                    <div style={{ width: 14, height: 14, borderRadius: 2, background: color, flexShrink: 0, border: '1px solid rgba(0,0,0,0.08)' }} />
+                    <span style={{ color: '#374151' }}>{label}</span>
+                  </div>
+                ))}
+                <div style={{ marginTop: 5, borderTop: '1px solid #f3f4f6', paddingTop: 4 }}>
+                  {isSingle
+                    ? <span style={{ color: '#9ca3af', fontSize: 10 }}>CSO 2022</span>
+                    : (
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <span style={{ color: '#9ca3af', fontSize: 10 }}>Z-score · CSO 2022</span>
+                          <button
+                            onClick={e => { e.stopPropagation(); setLegendNoteOpen(o => !o) }}
+                            style={{ background: 'none', border: '1px solid #d1d5db', borderRadius: '50%', width: 14, height: 14, fontSize: 9, cursor: 'pointer', color: '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, flexShrink: 0 }}
+                            title="How is this calculated?"
+                          >*</button>
+                        </div>
+                        {legendNoteOpen && (
+                          <div style={{ marginTop: 6, fontSize: 10, color: '#6b7280', lineHeight: 1.5 }}>
+                            For each selected metric, every small area is scored 0–1 based on how it compares to the national average. These scores are then added and divided equally — so 3 metrics selected means each contributes one third. Darker red = higher combined potential.
+                          </div>
+                        )}
+                      </div>
+                    )
+                  }
+                </div>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        )
+      })()}
     </div>
   )
 }
