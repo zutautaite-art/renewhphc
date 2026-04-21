@@ -163,8 +163,8 @@ function computeStatsFromFeatures(
     if (vals.length < 2) continue
     const mean = vals.reduce((s, v) => s + v, 0) / vals.length
     const std  = Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length)
-    const min  = Math.min(...vals)
-    const max  = Math.max(...vals)
+    let min = vals[0], max = vals[0]
+    for (const v of vals) { if (v < min) min = v; if (v > max) max = v }
     if (std > 0) out[key] = { mean, std, min, max }
   }
   return out
@@ -410,10 +410,24 @@ export function MapView(props: MapViewProps) {
       return [customerType, dotType, fullAddress, String(p.lat), String(p.lng), p.solar, p.ev, p.heatPump, '']
     })
     const csv = [header, ...rows].map(r => r.map(c => `"${c.replace(/"/g, '""')}"`).join(',')).join('\n')
+    const filename = `pins_${new Date().toISOString().slice(0, 10)}.csv`
+    // Use Web Share API on mobile if available (iOS Safari, Android Chrome)
+    if (navigator.share && /Mobi|Android|iPad|iPhone/i.test(navigator.userAgent)) {
+      const file = new File([csv], filename, { type: 'text/csv' })
+      navigator.share({ files: [file], title: 'Pins CSV' }).catch(() => {
+        // Fallback if share fails
+        fallbackDownload(csv, filename)
+      })
+    } else {
+      fallbackDownload(csv, filename)
+    }
+  }
+
+  function fallbackDownload(csv: string, filename: string) {
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
-    a.href = url; a.download = `pins_${new Date().toISOString().slice(0, 10)}.csv`
+    a.href = url; a.download = filename
     document.body.appendChild(a); a.click(); document.body.removeChild(a)
     URL.revokeObjectURL(url)
   }
