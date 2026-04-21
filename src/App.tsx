@@ -62,14 +62,12 @@ export default function App() {
   const [activeMetricKeys, setActiveMetricKeys] = useState<MetricToggleState>({})
   const [geoJsonReady, setGeoJsonReady] = useState(false)
   const [statsReadyAt, setStatsReadyAt] = useState(0)
+  const [clearPinsSignal, setClearPinsSignal] = useState(0)
+  const [sessionOnlyPinsSignal, setSessionOnlyPinsSignal] = useState(0)
+  const [pinsWarning, setPinsWarning] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [pobalInfoOpen, setPobalInfoOpen] = useState(false)
-
-  const hasWorkbookMetrics = useMemo(
-    () => !!(loadedData && Object.keys(loadedData.metricsByKey).length > 0),
-    [loadedData],
-  )
 
   // ── Restore from IndexedDB on mount ────────────────────────────────────────
   useEffect(() => {
@@ -177,6 +175,9 @@ export default function App() {
       setUploadDetailLines(parsed.warnings)
       setUploadError(null)
       setLoadedFileName(file.name)
+      // Wipe pins from IndexedDB — they survive this session but won't restore on reload
+      setSessionOnlyPinsSignal(n => n + 1)
+      setPinsWarning(true)
       // Save raw bytes to IndexedDB — restored on next page load
       saveWorkbook(file.name, buffer).catch((e) => console.warn('IndexedDB save failed:', e))
     } catch (err) {
@@ -287,15 +288,7 @@ export default function App() {
                   style={{ opacity: filtersReady ? 1 : 0.45, cursor: filtersReady ? 'pointer' : 'not-allowed' }}
                   onClick={() => {
                     const next: MetricToggleState = {}
-                    if (hasWorkbookMetrics && loadedData) {
-                      for (const row of metricFilters) {
-                        next[row.key] = !!loadedData.metricsByKey[row.key]
-                      }
-                    } else {
-                      for (const row of metricFilters) {
-                        next[row.key] = true
-                      }
-                    }
+                    for (const row of metricFilters) next[row.key] = true
                     setActiveMetricKeys(next)
                   }}
                 >
@@ -325,11 +318,7 @@ export default function App() {
                     style={{ opacity: filtersReady ? 1 : 0.45, cursor: filtersReady ? 'pointer' : 'not-allowed' }}
                     onClick={() => {
                       const next = { ...activeMetricKeys }
-                      if (hasWorkbookMetrics && loadedData) {
-                        for (const row of rows) next[row.key] = !!loadedData.metricsByKey[row.key]
-                      } else {
-                        for (const row of rows) next[row.key] = true
-                      }
+                      for (const row of rows) next[row.key] = true
                       setActiveMetricKeys(next)
                     }}
                   >
@@ -426,6 +415,18 @@ export default function App() {
                 style={{ display: 'none' }}
                 onChange={handleUploadChange}
               />
+              {pinsWarning && (
+                <div style={{ marginTop: 8, fontSize: 11, color: '#92400e', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 4, padding: '6px 8px', lineHeight: 1.5 }}>
+                  ⚠️ Pins are session-only — they will be lost when you close this page. Download them before closing.
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => { setClearPinsSignal(n => n + 1); setPinsWarning(false) }}
+                style={{ marginTop: 8, width: '100%', padding: '6px 0', fontSize: 11, color: '#9ca3af', background: 'transparent', border: '1px solid #e5e7eb', borderRadius: 4, cursor: 'pointer' }}
+              >
+                Clear pins
+              </button>
             </div>
           </div>
         </aside>
@@ -441,6 +442,8 @@ export default function App() {
           }}
           onGeoJsonReady={() => setGeoJsonReady(true)}
           onStatsReady={() => setStatsReadyAt(Date.now())}
+          clearPinsSignal={clearPinsSignal}
+          sessionOnlyPinsSignal={sessionOnlyPinsSignal}
           activeMetrics={activeMetrics}
           households={households}
           householdsLayerVisible={householdsLayerOn}

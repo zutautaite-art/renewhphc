@@ -102,6 +102,20 @@ export async function loadAllPinsFromDb(): Promise<DroppedPin[]> {
   } catch { return [] }
 }
 
+/** Delete all dropped pins. */
+export async function clearAllPinsFromDb(): Promise<void> {
+  try {
+    const db = await openDb()
+    const tx = db.transaction(PIN_STORE, 'readwrite')
+    await reqToPromise(tx.objectStore(PIN_STORE).clear())
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+    db.close()
+  } catch (e) { console.warn('clearAllPinsFromDb failed:', e) }
+}
+
 /** Update solar/ev/heatPump fields of an existing pin. */
 export async function updatePinInDb(id: string, updates: Partial<DroppedPin>): Promise<void> {
   try {

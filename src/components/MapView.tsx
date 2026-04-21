@@ -12,7 +12,7 @@ import { CSO_BOUNDARY_ATTRIBUTION, emptyFeatureCollection } from '../cso/arcgisG
 import { bboxForBuaCode, bboxForCountyLa, normGeoProp } from '../cso/boundaryLookup'
 import { geometryBBox } from '../geoBounds'
 import type { HouseholdRecord } from '../types/households'
-import { type DroppedPin, savePinToDb, loadAllPinsFromDb, updatePinInDb } from '../db'
+import { type DroppedPin, savePinToDb, loadAllPinsFromDb, updatePinInDb, clearAllPinsFromDb } from '../db'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -54,6 +54,10 @@ export type MapViewProps = {
   /** After embedded-metric stats are ready; parent can bump deps so `activeMetrics` re-evaluates. */
   onStatsReady?: () => void
   towns?: PinTownOption[]
+  /** Increment to trigger a full pin clear (called on manual clear). */
+  clearPinsSignal?: number
+  /** Increment to wipe pins from IndexedDB only — pins survive this session but not next reload. */
+  sessionOnlyPinsSignal?: number
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -90,25 +94,44 @@ function toPointGeoJson(points: HouseholdRecord[]) {
   }
 }
 
+// Manual coordinate overrides for counties whose bbox centroid lands off-centre
+// (e.g. irregular shapes, lakes pulling the bbox off the land mass)
+const COUNTY_LABEL_OVERRIDES: Record<string, [number, number]> = {
+  'OFFALY':  [-7.56, 53.27],
+}
+
 function countyLabelPoints(fc: FeatureCollection): FeatureCollection {
-  const feats: Feature<Point>[] = []
-  const seen = new Set<string>()
+  // Merge ALL bbox extents per county name so counties split across multiple
+  // council-area features (e.g. Cork City + Cork County both COUNTY="Cork")
+  // each get one label at the centroid of their combined bounding box.
+  const merged: Record<string, [number, number, number, number]> = {}
   for (const f of fc.features) {
     const g = f.geometry
     if (!g || (g.type !== 'Polygon' && g.type !== 'MultiPolygon')) continue
     const p = (f.properties as Record<string, unknown> | null) ?? {}
     const name = String(p.COUNTY ?? p.LOCAL_AUTHORITY ?? '').trim()
-    if (!name || seen.has(name)) continue
+    if (!name) continue
     const box = geometryBBox(g)
     if (!box) continue
-    const [w, s, e, n] = box
-    feats.push({
-      type: 'Feature',
-      geometry: { type: 'Point', coordinates: [(w + e) / 2, (s + n) / 2] },
-      properties: { COUNTY: name },
-    })
-    seen.add(name)
+    if (!merged[name]) {
+      merged[name] = [box[0], box[1], box[2], box[3]]
+    } else {
+      const b = merged[name]
+      if (box[0] < b[0]) b[0] = box[0]
+      if (box[1] < b[1]) b[1] = box[1]
+      if (box[2] > b[2]) b[2] = box[2]
+      if (box[3] > b[3]) b[3] = box[3]
+    }
   }
+  const feats: Feature<Point>[] = Object.entries(merged).map(([name, [w, s, e, n]]) => {
+    const override = COUNTY_LABEL_OVERRIDES[name.toUpperCase()]
+    const coords = override ?? [(w + e) / 2, (s + n) / 2]
+    return {
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: coords },
+      properties: { COUNTY: name },
+    }
+  })
   return { type: 'FeatureCollection', features: feats }
 }
 
@@ -282,6 +305,21 @@ function redScoreExpression(): maplibregl.ExpressionSpecification {
   ]
 }
 
+// ─── Filter icons ─────────────────────────────────────────────────────────────
+
+const FILTER_ICONS: Record<string, string> = {
+  age_35_44:                       '🧑',
+  families_children:               '👨‍👩‍👧‍👦',
+  education_degree_plus:           '🎓',
+  occupation_manager_professional: '💼',
+  phobal_score:                    '🏘️',
+  electric_heating:                '⚡',
+  solar_panels:                    '☀️',
+  ev_households:                   '🚗',
+  heat_pumps:                      '🔥',
+  income:                          '💰',
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function MapView(props: MapViewProps) {
@@ -351,6 +389,20 @@ export function MapView(props: MapViewProps) {
   useEffect(() => { pinModeRef.current = pinModeActive }, [pinModeActive])
   useEffect(() => { droppedPinsRef.current = droppedPins }, [droppedPins])
 
+  // Clear all pins when signal is bumped (manual "Clear pins" button — wipes state + DB)
+  useEffect(() => {
+    if (!props.clearPinsSignal) return
+    setDroppedPins([])
+    clearAllPinsFromDb().catch(() => {})
+  }, [props.clearPinsSignal])
+
+  // On new Excel upload: wipe pins from IndexedDB only — pins stay visible this session
+  // but won't restore if page is reloaded
+  useEffect(() => {
+    if (!props.sessionOnlyPinsSignal) return
+    clearAllPinsFromDb().catch(() => {})
+  }, [props.sessionOnlyPinsSignal])
+
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
       if (droppedPinsRef.current.length > 0) { e.preventDefault(); e.returnValue = '' }
@@ -402,12 +454,15 @@ export function MapView(props: MapViewProps) {
 
   function downloadPinsCSV() {
     if (droppedPins.length === 0) return
-    const header = ['customer_type', 'dot_type', 'Full_Address', 'latitude_clean', 'longitude_clean', 'solar', 'ev', 'heat_pump', 'coord_issue']
+    const header = ['customer_type', 'dot_type', 'Full_Address', 'latitude_clean', 'longitude_clean', 'solar', 'ev', 'heat_pump', 'coord_issue', 'date_time']
     const rows = droppedPins.map(p => {
       const customerType = p.type === 'Household' ? 'households' : 'commercial'
       const dotType = p.type === 'Household' ? 'red' : 'yellow'
       const fullAddress = [p.houseNo, p.street, p.town, p.county].filter(Boolean).join(', ')
-      return [customerType, dotType, fullAddress, String(p.lat), String(p.lng), p.solar, p.ev, p.heatPump, '']
+      const d = new Date(p.createdAt)
+      const pad = (n: number) => String(n).padStart(2, '0')
+      const dateTime = `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+      return [customerType, dotType, fullAddress, String(p.lat), String(p.lng), p.solar, p.ev, p.heatPump, '', dateTime]
     })
     const csv = [header, ...rows].map(r => r.map(c => `"${c.replace(/"/g, '""')}"`).join(',')).join('\n')
     const filename = `pins_${new Date().toISOString().slice(0, 10)}.csv`
@@ -466,11 +521,10 @@ export function MapView(props: MapViewProps) {
       .catch((err) => { console.error('SA GeoJSON load failed:', err); setSaLoading(false) })
   }, [])
 
-  // ── Update fill colour/opacity when metrics or stats change ───────────────
+  // ── Update fill opacity when stats change (fill-color handled by effect below) ──
   useEffect(() => {
     const map = mapRef.current
     if (!map || !map.isStyleLoaded() || !map.getLayer('cso-sa-fill')) return
-    map.setPaintProperty('cso-sa-fill', 'fill-color',   redScoreExpression())
     map.setPaintProperty('cso-sa-fill', 'fill-opacity', SA_FILL_OPACITY)
   }, [activeMetrics, statsReady])
 
@@ -555,11 +609,6 @@ export function MapView(props: MapViewProps) {
       map.addLayer({ id: 'cso-bua-line',      type: 'line', source: 'cso-bua',         paint: { 'line-color': TOWN_LINE,   'line-width': ['interpolate',['linear'],['zoom'],4,1.1,8,1.0,12,0.8], 'line-opacity': 0.95 } })
       map.addLayer({ id: 'cso-sa-line',       type: 'line', source: 'cso-small-areas', paint: { 'line-color': SA_LINE,     'line-width': ['interpolate',['linear'],['zoom'],4,0.5,6.8,0.7,9,0.8,12,0.65], 'line-opacity': ['interpolate',['linear'],['zoom'],4,0.4,8,0.65,12,0.5] } })
 
-      // Labels
-      map.addLayer({ id: 'cso-counties-label', type: 'symbol', source: 'cso-counties-label-points', minzoom: 4.2,
-        layout: { 'text-field': ['get','COUNTY'], 'text-font': ['Open Sans Bold','Arial Unicode MS Bold'], 'text-size': ['interpolate',['linear'],['zoom'],4,10,7,12,10,13], 'text-anchor': 'center', 'text-allow-overlap': false },
-        paint:  { 'text-color': '#111827', 'text-halo-color': '#ffffff', 'text-halo-width': 2 } })
-
       // Point layers
       map.addLayer({ id: 'households-circle',    type: 'circle', source: 'households',    paint: { 'circle-color': '#ef4444', 'circle-radius': ['interpolate',['linear'],['zoom'],6,1.6,10,3.5,14,5.5], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1 } })
       map.addLayer({ id: 'ev-commercial-circle', type: 'circle', source: 'ev-commercial', paint: { 'circle-color': '#eab308', 'circle-radius': ['interpolate',['linear'],['zoom'],6,1.6,10,3.5,14,5.5], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1 } })
@@ -568,6 +617,11 @@ export function MapView(props: MapViewProps) {
       map.addSource('dropped-pins', { type: 'geojson', data: emptyFeatureCollection() })
       map.addLayer({ id: 'dropped-pins-outer', type: 'circle', source: 'dropped-pins', paint: { 'circle-color': '#ef4444', 'circle-radius': ['interpolate', ['linear'], ['zoom'], 6, 1.6, 10, 3.5, 14, 5.5], 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1 } })
       map.addLayer({ id: 'dropped-pins-cross', type: 'symbol', source: 'dropped-pins', layout: { 'text-field': '+', 'text-size': ['interpolate', ['linear'], ['zoom'], 6, 5, 10, 9, 14, 13], 'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'], 'text-anchor': 'center', 'text-allow-overlap': true }, paint: { 'text-color': '#ffffff' } })
+
+      // County labels last — floats above all dots visually; symbol layers don't block fill mouse events
+      map.addLayer({ id: 'cso-counties-label', type: 'symbol', source: 'cso-counties-label-points', minzoom: 4.2,
+        layout: { 'text-field': ['get','COUNTY'], 'text-font': ['Open Sans Bold','Arial Unicode MS Bold'], 'text-size': ['interpolate',['linear'],['zoom'],4,11,7,13,10,15], 'text-anchor': 'center', 'text-allow-overlap': false },
+        paint:  { 'text-color': '#1d4ed8', 'text-halo-color': '#ffffff', 'text-halo-width': 2 } })
 
       // Seed dropped pins if already loaded
       if (droppedPinsRef.current.length > 0) {
@@ -684,7 +738,12 @@ export function MapView(props: MapViewProps) {
   useEffect(() => {
     const map = mapRef.current
     if (!map || !map.isStyleLoaded()) return
-    const colours = ['#c0392b', '#e74c3c', '#f1948a', '#f9b8b1', '#fde8e6']
+    const saMetrics = activeMetrics.filter(m => m.geography === 'small_area')
+    // Use lighter palette for 0 or 1 active metrics; dark only for 2+
+    const isSingle = saMetrics.length <= 1
+    const colours = isSingle
+      ? ['#c0392b', '#e74c3c', '#f1948a', '#f9b8b1', '#fde8e6']
+      : ['#7f1d1d', '#b91c1c', '#ef4444', '#fb7185', '#fecdd3']
     const expr: maplibregl.ExpressionSpecification = [
       'case',
       ['!', ['has', '_count']], 'rgba(0,0,0,0)',
@@ -922,7 +981,7 @@ export function MapView(props: MapViewProps) {
                     <tbody>
                       {tooltip.rows.map((row, i) => (
                         <tr key={i}>
-                          <td style={{ padding: '2px 8px 2px 0', borderBottom: '1px solid #f3f4f6', whiteSpace: 'nowrap' }}>{row.label}</td>
+                          <td style={{ padding: '2px 8px 2px 0', borderBottom: '1px solid #f3f4f6', whiteSpace: 'nowrap' }}>{FILTER_ICONS[row.key] ? `${FILTER_ICONS[row.key]} ${row.label}` : row.label}</td>
                           <td style={{ textAlign: 'right', borderBottom: '1px solid #f3f4f6', padding: '2px 4px' }}>{row.no}</td>
                           <td style={{ textAlign: 'right', borderBottom: '1px solid #f3f4f6', padding: '2px 0' }}>{row.pct}</td>
                         </tr>
@@ -1104,13 +1163,13 @@ export function MapView(props: MapViewProps) {
           }
           if (vals.length > 0) {
             vals.sort((a, b) => a - b)
-            const min = Math.round(vals[0])
-            const max = Math.round(vals[vals.length - 1])
-            const step = Math.ceil((max - min) / 5)
-            // 5 equal-width bands from min to max
+            const rawMin = vals[0]
+            const rawMax = vals[vals.length - 1]
+            const max = Math.round(rawMax)
+            const breakPts = [0, 0.2, 0.4, 0.6, 0.8].map(t => Math.round(rawMin + t * (rawMax - rawMin)))
             const bands5 = Array.from({ length: 5 }, (_, i) => ({
-              lo: min + i * step,
-              hi: i === 4 ? max : min + (i + 1) * step - 1,
+              lo: breakPts[i],
+              hi: i === 4 ? max : breakPts[i + 1] - 1,
             }))
             // Darkest = highest at top
             rangeBands = COLOURS.map((color, i) => {

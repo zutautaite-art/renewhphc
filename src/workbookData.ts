@@ -156,7 +156,8 @@ function parseMetricRows(
   const usableCfg = cfg.filter(
     (c) =>
       c.kind === (geography === 'small_area' ? 'small_area_metric' : 'town_metric') &&
-      !!(c.mapField && String(c.mapField).trim()) &&
+      // Allow metrics with only a rawField and no mapField (e.g. phobal_score)
+      !!((c.mapField && String(c.mapField).trim()) || (c.rawField && String(c.rawField).trim())) &&
       statusIsUse(c),
   )
   if (!rows.length || !usableCfg.length) return metrics
@@ -171,9 +172,11 @@ function parseMetricRows(
   for (const conf of usableCfg) {
     const mapField = conf.mapField ?? ''
     const rawField = conf.rawField
+    // phobal_score and similar: no mapField, rawField serves as both count and value
+    const noMapField = !mapField
     const mapKey = normKey(mapField)
     const rawKey = rawField ? normKey(rawField) : undefined
-    if (!headerSet.has(mapKey)) {
+    if (!noMapField && !headerSet.has(mapKey)) {
       warnings.push(`${geography === 'small_area' ? 'small_area_master' : 'town_master'}: map field "${mapField}" for filter "${conf.key}" was not found.`)
       continue
     }
@@ -193,7 +196,8 @@ function parseMetricRows(
       const lookup = buildLookup(row)
       const id = normalizeAreaId(getFirst(lookup, idAliases))
       if (!id) return
-      const pctNum = parseCellNumber(lookup.get(mapKey))
+      // If no mapField, pctValue is null and countNum comes from rawKey only
+      const pctNum = noMapField ? null : parseCellNumber(lookup.get(mapKey))
       const countNum = rawKey ? parseCellNumber(lookup.get(rawKey)) : parseCellNumber(lookup.get(mapKey))
       if (countNum === null) {
         const rawVal = rawKey ? lookup.get(rawKey) : lookup.get(mapKey)
