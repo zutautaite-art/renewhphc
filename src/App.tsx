@@ -14,7 +14,17 @@ import { fetchCsoCountyAndBuaGeoJson } from './cso/boundaryData'
 import type { LocalAuthorityRow } from './cso/geohivePlaces'
 import { linkBuaToLocalAuthorities, type LinkedTownOption } from './buaLaLink'
 import { parseWorkbookData, type ParsedWorkbookData, type FilterConfigRow } from './workbookData'
-import { fetchSharedWorkbookBuffer, uploadSharedWorkbook } from './workbookBlob'
+import {
+  fetchRemoteWorkbookMeta,
+  fetchBufferFromRemoteMeta,
+  uploadSharedWorkbook,
+} from './workbookBlob'
+
+function isLocalDevHost(): boolean {
+  if (typeof window === 'undefined') return false
+  const h = window.location.hostname
+  return h === 'localhost' || h === '127.0.0.1'
+}
 
 const EMPTY_FC: FeatureCollection = { type: 'FeatureCollection', features: [] }
 type MetricToggleState = Record<string, boolean>
@@ -71,28 +81,59 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [pobalInfoOpen, setPobalInfoOpen] = useState(false)
+  /** Explains Blob vs IndexedDB; set from `/api/workbook-remote` on load. */
+  const [blobSetupHint, setBlobSetupHint] = useState<string | null>(null)
 
   // ── Restore workbook: Vercel Blob first (all devices), else IndexedDB (this browser) ──
   useEffect(() => {
     let cancelled = false
     void (async () => {
-      const remoteBuf = await fetchSharedWorkbookBuffer()
+      const meta = await fetchRemoteWorkbookMeta()
       if (cancelled) return
-      if (remoteBuf) {
-        try {
-          const wb = XLSX.read(remoteBuf, { type: 'array' })
-          const parsed = parseWorkbookData(wb)
-          setLoadedData(parsed)
-          setImportSummary(parsed.importSummary)
-          setUploadDetailLines(parsed.warnings)
-          setUploadError(null)
-          setLoadedFileName('Shared workbook (cloud)')
-          saveWorkbook('shared-from-cloud.xlsx', remoteBuf).catch(() => {})
-          return
-        } catch (err) {
-          console.warn('Cloud workbook parse failed:', err)
+
+      const local = isLocalDevHost()
+      if (meta === null) {
+        setBlobSetupHint(
+          local
+            ? 'Local dev: `/api/*` is not served by `npm run dev`. Use your live Vercel URL or run `vercel dev` for cloud sync.'
+            : 'Workbook API did not respond. Redeploy with the `api/` routes from this repo.',
+        )
+      } else if (!meta.blobConfigured) {
+        setBlobSetupHint(
+          local
+            ? 'Blob token is not available locally. Deploy on Vercel with Storage → Blob linked to enable cross-device sync.'
+            : 'Vercel Blob is not linked — only this browser keeps the workbook (IndexedDB). See README → “Wire up Vercel Blob”.',
+        )
+      } else if (meta.noFileYet) {
+        setBlobSetupHint(
+          local
+            ? null
+            : 'Cloud storage is ready. Upload once below and every device can load the same workbook.',
+        )
+      } else {
+        setBlobSetupHint(null)
+      }
+
+      if (meta?.url) {
+        const remoteBuf = await fetchBufferFromRemoteMeta(meta)
+        if (cancelled) return
+        if (remoteBuf) {
+          try {
+            const wb = XLSX.read(remoteBuf, { type: 'array' })
+            const parsed = parseWorkbookData(wb)
+            setLoadedData(parsed)
+            setImportSummary(parsed.importSummary)
+            setUploadDetailLines(parsed.warnings)
+            setUploadError(null)
+            setLoadedFileName('Shared workbook (cloud)')
+            saveWorkbook('shared-from-cloud.xlsx', remoteBuf).catch(() => {})
+            return
+          } catch (err) {
+            console.warn('Cloud workbook parse failed:', err)
+          }
         }
       }
+
       loadWorkbook()
         .then((stored) => {
           if (cancelled || !stored) return
@@ -208,7 +249,9 @@ export default function App() {
       setPinsWarning(true)
       saveWorkbook(file.name, buffer).catch((e) => console.warn('IndexedDB save failed:', e))
       const blobResult = await uploadSharedWorkbook(file)
-      if (!blobResult.ok) {
+      if (blobResult.ok) {
+        setBlobSetupHint(null)
+      } else {
         detail.push(
           `Cloud copy (other phones/PCs): ${blobResult.message}. This device still has the file locally.`,
         )
@@ -457,6 +500,22 @@ export default function App() {
                     ? <>Loaded: <strong>{loadedFileName}</strong> — stays until a new file is uploaded.</>
                     : 'Drop or click to load a data file. Persists across page reloads.'}
                 </div>
+                {blobSetupHint ? (
+                  <div
+                    style={{
+                      marginTop: 8,
+                      fontSize: 11,
+                      color: '#4b5563',
+                      background: '#f3f4f6',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: 4,
+                      padding: '8px 10px',
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    {blobSetupHint}
+                  </div>
+                ) : null}
               </div>
               <div
                 onDrop={handleDrop}
