@@ -47,6 +47,25 @@ function reqToPromise<T>(req: IDBRequest<T>): Promise<T> {
   })
 }
 
+/** User-visible explanation when save/restore fails. */
+export function describeIndexedDbError(e: unknown): string {
+  const dom = e instanceof DOMException ? e : null
+  if (dom?.name === 'QuotaExceededError') {
+    return 'Browser storage is full. Use a smaller .xlsx, free disk space, or clear this site’s stored data. Avoid private/incognito windows for long-term storage.'
+  }
+  if (dom?.name === 'InvalidStateError') {
+    return 'Browser storage is unavailable (often in private browsing). The file works until you close this tab.'
+  }
+  if (e instanceof Error) return e.message
+  return 'Browser storage error'
+}
+
+/** Best-effort: ask the browser not to evict this origin’s data under storage pressure. */
+export async function tryPersistBrowserStorage(): Promise<void> {
+  if (typeof navigator === 'undefined' || !navigator.storage?.persist) return
+  await navigator.storage.persist().catch(() => {})
+}
+
 /** Persist the uploaded workbook bytes for restore on next visit. */
 export async function saveWorkbook(name: string, buffer: ArrayBuffer): Promise<void> {
   const db = await openDb()
@@ -62,7 +81,7 @@ export async function saveWorkbook(name: string, buffer: ArrayBuffer): Promise<v
   db.close()
 }
 
-/** Load the last saved workbook, or null if none / unavailable. */
+/** Load the last saved workbook, or null if none / storage unavailable. */
 export async function loadWorkbook(): Promise<StoredWorkbook | null> {
   try {
     const db = await openDb()
