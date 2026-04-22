@@ -58,13 +58,16 @@ export type MapViewProps = {
   clearPinsSignal?: number
   /** Increment to wipe pins from IndexedDB only — pins survive this session but not next reload. */
   sessionOnlyPinsSignal?: number
+  /** Show RENEW Potential Score as an independent fill layer (never affects z-score). */
+  renewScoreVisible?: boolean
+  /** Show Commercial Readiness Score as an independent fill layer (never affects z-score). */
+  commercialScoreVisible?: boolean
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const INITIAL_VIEW  = { center: [-8.1, 53.35] as [number, number], zoom: 6.8 }
 const COUNTY_LINE   = '#2563eb'
-const TOWN_LINE     = '#92400e'
 const SA_LINE       = '#dc2626'
 const SA_GEOJSON_URL = '/small_areas_metrics.geojson'
 
@@ -282,8 +285,39 @@ function attachCombinedMetric(
   }
 }
 
-// ─── MapLibre expressions ─────────────────────────────────────────────────────
+// ─── Index score helper ───────────────────────────────────────────────────────
+// Normalises a 0-100 score to 0-1 so it drives the same fill-color expression.
+// Completely independent of attachCombinedMetric — never feeds into _score or
+// z-score calculations. Each index metric lives in its own GeoJSON source.
+function attachSingleIndexScore(
+  fc: FeatureCollection,
+  scoreKey: string,
+): FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: fc.features.map((f) => {
+      const props = { ...((f.properties as Record<string, unknown> | null) ?? {}) }
+      let embedded: Record<string, { mapValue: number }> = {}
+      try {
+        const raw = props._metrics
+        embedded = typeof raw === 'string' ? JSON.parse(raw) : (raw ?? {})
+      } catch {}
+      const val = embedded[scoreKey]?.mapValue
+      const hasVal = val != null && Number.isFinite(val)
+      return {
+        ...f,
+        properties: {
+          ...props,
+          // Null or missing score → treated as 0 (lightest band) not transparent
+          _score: hasVal ? Math.max(0, Math.min(1, (val as number) / 100)) : 0,
+          _count: 1,
+        },
+      }
+    }),
+  }
+}
 
+// ─── MapLibre expressions ─────────────────────────────────────────────────────
 const SA_FILL_OPACITY: maplibregl.ExpressionSpecification = [
   'case',
   ['>', ['coalesce', ['to-number', ['get', '_count']], 0], 0], 0.72, 0,
@@ -302,6 +336,19 @@ function redScoreExpression(): maplibregl.ExpressionSpecification {
       0.6, '#e74c3c',   // 0.6–0.8
       0.8, '#c0392b',   // 0.8–1.0  highest band
     ],
+  ]
+}
+
+// For index score layers — same step breakpoints but floor band is more visible
+// so low-scoring areas don't look transparent (score 0 = lightest band, not invisible)
+function indexScoreExpression(): maplibregl.ExpressionSpecification {
+  return [
+    'step', ['coalesce', ['to-number', ['get', '_score']], 0],
+    '#fcc9c0',        // 0.0–0.2  Very Low  (more visible than #fde8e6)
+    0.2, '#f1948a',   // 0.2–0.4  Low
+    0.4, '#e74c3c',   // 0.4–0.6  Medium
+    0.6, '#c0392b',   // 0.6–0.8  High
+    0.8, '#7f1d1d',   // 0.8–1.0  Very High
   ]
 }
 
@@ -358,6 +405,8 @@ export function MapView(props: MapViewProps) {
     rows: Array<{ key: string; label: string; no: string; pct: string }>
     simple?: string[]
     pointRows?: Array<{ label: string; value: string }>
+    indexRows?: Array<{ label: string; value: string }>
+    combinedScore?: { band: string; pct: string } | null
   }
   const [tooltip, setTooltip] = useState<Tooltip | null>(null)
 
@@ -516,6 +565,8 @@ export function MapView(props: MapViewProps) {
         if (map?.isStyleLoaded()) {
           const processed = attachCombinedMetric(data, propsRef.current.activeMetrics ?? [], 'small_area', statsRef.current)
           ;(map.getSource('cso-small-areas') as maplibregl.GeoJSONSource | undefined)?.setData(processed)
+          ;(map.getSource('cso-sa-renew')      as maplibregl.GeoJSONSource | undefined)?.setData(attachSingleIndexScore(data, 'renew_score'))
+          ;(map.getSource('cso-sa-commercial') as maplibregl.GeoJSONSource | undefined)?.setData(attachSingleIndexScore(data, 'commercial_score'))
         }
       })
       .catch((err) => { console.error('SA GeoJSON load failed:', err); setSaLoading(false) })
@@ -577,6 +628,8 @@ export function MapView(props: MapViewProps) {
       map.addSource('cso-counties',              { type: 'geojson', data: emptyFeatureCollection() })
       map.addSource('cso-bua',                   { type: 'geojson', data: emptyFeatureCollection() })
       map.addSource('cso-small-areas',           { type: 'geojson', data: emptyFeatureCollection(), generateId: true })
+      map.addSource('cso-sa-renew',              { type: 'geojson', data: emptyFeatureCollection(), generateId: true })
+      map.addSource('cso-sa-commercial',         { type: 'geojson', data: emptyFeatureCollection(), generateId: true })
       map.addSource('cso-counties-selection',    { type: 'geojson', data: emptyFeatureCollection() })
       map.addSource('cso-bua-selection',         { type: 'geojson', data: emptyFeatureCollection() })
       map.addSource('cso-counties-label-points', { type: 'geojson', data: emptyFeatureCollection() })
@@ -587,6 +640,10 @@ export function MapView(props: MapViewProps) {
       map.addLayer({ id: 'cso-counties-fill', type: 'fill', source: 'cso-counties',    paint: { 'fill-color': 'rgba(0,0,0,0)', 'fill-opacity': 0 } })
       map.addLayer({ id: 'cso-bua-fill',      type: 'fill', source: 'cso-bua',         paint: { 'fill-color': redScoreExpression(), 'fill-opacity': SA_FILL_OPACITY } })
       map.addLayer({ id: 'cso-sa-fill',       type: 'fill', source: 'cso-small-areas', paint: { 'fill-color': redScoreExpression(), 'fill-opacity': SA_FILL_OPACITY } })
+
+      // Index score layers — completely independent fill layers, never part of z-score
+      map.addLayer({ id: 'cso-sa-renew-fill',      type: 'fill', source: 'cso-sa-renew',      paint: { 'fill-color': indexScoreExpression(), 'fill-opacity': 0.78 }, layout: { visibility: 'none' } })
+      map.addLayer({ id: 'cso-sa-commercial-fill', type: 'fill', source: 'cso-sa-commercial', paint: { 'fill-color': indexScoreExpression(), 'fill-opacity': 0.78 }, layout: { visibility: 'none' } })
 
       map.addLayer({
         id: 'cso-sa-hover-line',
@@ -606,7 +663,9 @@ export function MapView(props: MapViewProps) {
 
       // Line layers
       map.addLayer({ id: 'cso-counties-line', type: 'line', source: 'cso-counties',    paint: { 'line-color': COUNTY_LINE, 'line-width': ['interpolate',['linear'],['zoom'],4,2.4,8,2.0,12,1.6], 'line-opacity': 0.98 } })
-      map.addLayer({ id: 'cso-bua-line',      type: 'line', source: 'cso-bua',         paint: { 'line-color': TOWN_LINE,   'line-width': ['interpolate',['linear'],['zoom'],4,1.1,8,1.0,12,0.8], 'line-opacity': 0.95 } })
+      // Town border: orange outer casing drawn first (wider), dark brown inner on top — visible on all basemaps
+      map.addLayer({ id: 'cso-bua-line-casing', type: 'line', source: 'cso-bua', paint: { 'line-color': '#f97316', 'line-width': ['interpolate',['linear'],['zoom'],4,4.5,8,4.0,12,3.2], 'line-opacity': 0.9 } })
+      map.addLayer({ id: 'cso-bua-line',        type: 'line', source: 'cso-bua', paint: { 'line-color': '#431407', 'line-width': ['interpolate',['linear'],['zoom'],4,2.0,8,1.8,12,1.4], 'line-opacity': 1.0 } })
       map.addLayer({ id: 'cso-sa-line',       type: 'line', source: 'cso-small-areas', paint: { 'line-color': SA_LINE,     'line-width': ['interpolate',['linear'],['zoom'],4,0.5,6.8,0.7,9,0.8,12,0.65], 'line-opacity': ['interpolate',['linear'],['zoom'],4,0.4,8,0.65,12,0.5] } })
 
       // Point layers
@@ -687,6 +746,8 @@ export function MapView(props: MapViewProps) {
       if (saRawLoadedRef.current.features.length > 0) {
         const processed = attachCombinedMetric(saRawLoadedRef.current, propsRef.current.activeMetrics ?? [], 'small_area', statsRef.current)
         ;(map.getSource('cso-small-areas') as maplibregl.GeoJSONSource).setData(processed)
+        ;(map.getSource('cso-sa-renew')      as maplibregl.GeoJSONSource).setData(attachSingleIndexScore(saRawLoadedRef.current, 'renew_score'))
+        ;(map.getSource('cso-sa-commercial') as maplibregl.GeoJSONSource).setData(attachSingleIndexScore(saRawLoadedRef.current, 'commercial_score'))
       } else {
         ;(map.getSource('cso-small-areas') as maplibregl.GeoJSONSource).setData(saDataRef.current)
       }
@@ -766,14 +827,18 @@ export function MapView(props: MapViewProps) {
     const map = mapRef.current
     if (!map) return
     const vis = (on?: boolean) => on === false ? 'none' : 'visible'
-    if (map.getLayer('cso-counties-line'))     map.setLayoutProperty('cso-counties-line',     'visibility', vis(props.boundaryCountyLinesVisible))
-    if (map.getLayer('cso-counties-label'))    map.setLayoutProperty('cso-counties-label',    'visibility', vis(props.boundaryCountyLinesVisible))
-    if (map.getLayer('cso-bua-line'))          map.setLayoutProperty('cso-bua-line',          'visibility', vis(props.boundaryTownLinesVisible))
-    if (map.getLayer('cso-sa-line'))           map.setLayoutProperty('cso-sa-line',           'visibility', vis(props.boundarySmallAreaLinesVisible))
-    if (map.getLayer('cso-sa-fill'))           map.setLayoutProperty('cso-sa-fill',           'visibility', vis(props.boundarySmallAreaLinesVisible))
-    if (map.getLayer('households-circle'))     map.setLayoutProperty('households-circle',     'visibility', vis(props.householdsLayerVisible))
-    if (map.getLayer('ev-commercial-circle'))  map.setLayoutProperty('ev-commercial-circle',  'visibility', vis(props.evCommercialLayerVisible))
-  }, [props.boundaryCountyLinesVisible, props.boundaryTownLinesVisible, props.boundarySmallAreaLinesVisible, props.householdsLayerVisible, props.evCommercialLayerVisible])
+    if (map.getLayer('cso-counties-line'))        map.setLayoutProperty('cso-counties-line',        'visibility', vis(props.boundaryCountyLinesVisible))
+    if (map.getLayer('cso-counties-label'))       map.setLayoutProperty('cso-counties-label',       'visibility', vis(props.boundaryCountyLinesVisible))
+    if (map.getLayer('cso-bua-line-casing'))      map.setLayoutProperty('cso-bua-line-casing',      'visibility', vis(props.boundaryTownLinesVisible))
+    if (map.getLayer('cso-bua-line'))             map.setLayoutProperty('cso-bua-line',             'visibility', vis(props.boundaryTownLinesVisible))
+    if (map.getLayer('cso-sa-line'))              map.setLayoutProperty('cso-sa-line',              'visibility', vis(props.boundarySmallAreaLinesVisible))
+    if (map.getLayer('cso-sa-fill'))              map.setLayoutProperty('cso-sa-fill',              'visibility', vis(props.boundarySmallAreaLinesVisible))
+    if (map.getLayer('households-circle'))        map.setLayoutProperty('households-circle',        'visibility', vis(props.householdsLayerVisible))
+    if (map.getLayer('ev-commercial-circle'))     map.setLayoutProperty('ev-commercial-circle',     'visibility', vis(props.evCommercialLayerVisible))
+    // Index layers — independent visibility, never linked to any other toggle
+    if (map.getLayer('cso-sa-renew-fill'))        map.setLayoutProperty('cso-sa-renew-fill',        'visibility', vis(props.renewScoreVisible))
+    if (map.getLayer('cso-sa-commercial-fill'))   map.setLayoutProperty('cso-sa-commercial-fill',   'visibility', vis(props.commercialScoreVisible))
+  }, [props.boundaryCountyLinesVisible, props.boundaryTownLinesVisible, props.boundarySmallAreaLinesVisible, props.householdsLayerVisible, props.evCommercialLayerVisible, props.renewScoreVisible, props.commercialScoreVisible])
 
   // ── Selection highlight ───────────────────────────────────────────────────
   useEffect(() => {
@@ -850,7 +915,34 @@ export function MapView(props: MapViewProps) {
       const saCode = rawGeogid.replace(/^[A-Za-z]/, '')
       const edName = String(p.ED_Name ?? p.GEOGDESC ?? '')
       const county = String(p.COUNTY ?? '')
-      setTooltip({ x: e.point.x + 16, y: e.point.y + 16, title: rawGeogid, saCode, county, edName, rows })
+
+      // Index score rows — only added when the respective toggle is on
+      const indexRows: Array<{ label: string; value: string }> = []
+      if (propsRef.current.renewScoreVisible) {
+        const val = embedded['renew_score']?.mapValue
+        indexRows.push({ label: 'RENEW Potential Score', value: val != null && Number.isFinite(val) ? `${Number(val).toFixed(1)} / 100` : '—' })
+      }
+      if (propsRef.current.commercialScoreVisible) {
+        const val = embedded['commercial_score']?.mapValue
+        indexRows.push({ label: 'Commercial Readiness', value: val != null && Number.isFinite(val) ? `${Number(val).toFixed(1)} / 100` : '—' })
+      }
+
+      // Combined z-score band — only shown when 2+ SA metrics are active
+      const saMetricCount = (propsRef.current.activeMetrics ?? []).filter(m => m.geography === 'small_area').length
+      let combinedScore: { band: string; pct: string } | null = null
+      if (saMetricCount >= 2) {
+        const rawScore = typeof p._score === 'number' ? p._score : (p._score != null ? Number(p._score) : null)
+        if (rawScore != null && Number.isFinite(rawScore)) {
+          const band = rawScore >= 0.8 ? 'High Potential'
+            : rawScore >= 0.6 ? 'Above Average'
+            : rawScore >= 0.4 ? 'Moderate'
+            : rawScore >= 0.2 ? 'Developing'
+            : 'Low Potential'
+          combinedScore = { band, pct: String(Math.round(rawScore * 100)) }
+        }
+      }
+
+      setTooltip({ x: e.point.x + 16, y: e.point.y + 16, title: rawGeogid, saCode, county, edName, rows, indexRows, combinedScore })
     }
 
     const onPointMove = (e: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
@@ -945,50 +1037,63 @@ export function MapView(props: MapViewProps) {
       {tooltip && (
         <div
           className="mapHoverTooltip"
-          style={{ left: tooltip.x, top: tooltip.y, maxWidth: 340, pointerEvents: 'none' }}
+          style={{ left: tooltip.x, top: tooltip.y, maxWidth: 'min(320px, calc(100vw - 24px))', pointerEvents: 'none' }}
         >
-          {tooltip.rows.length > 0 || tooltip.county ? (
+          {tooltip.rows.length > 0 || tooltip.county || (tooltip.indexRows && tooltip.indexRows.length > 0) ? (
             <>
+              {/* 1 — Area name always at top */}
               {(tooltip.edName || tooltip.saCode || tooltip.county) && (
-                <div style={{ display: 'flex', alignItems: 'center', fontSize: 13, marginBottom: 6, whiteSpace: 'nowrap', flexWrap: 'nowrap' }}>
-                  {tooltip.edName && (
-                    <span style={{ color: '#15803d', fontWeight: 700 }}>{tooltip.edName}</span>
-                  )}
-                  {tooltip.edName && tooltip.county && (
-                    <span style={{ color: '#15803d', margin: '0 5px' }}>|</span>
-                  )}
-                  {tooltip.county && (
-                    <span style={{ color: '#15803d', fontWeight: 400 }}>{tooltip.county}</span>
-                  )}
-                  {(tooltip.edName || tooltip.county) && tooltip.saCode && (
-                    <span style={{ color: '#9ca3af', margin: '0 5px' }}>|</span>
-                  )}
-                  {tooltip.saCode && (
-                    <span style={{ color: '#9ca3af', fontWeight: 400 }}>SA: {tooltip.saCode}</span>
-                  )}
+                <div style={{ display: 'flex', alignItems: 'center', fontSize: 13, marginBottom: 4, flexWrap: 'wrap', gap: '0 4px' }}>
+                  {tooltip.edName && <span style={{ color: '#15803d', fontWeight: 700 }}>{tooltip.edName}</span>}
+                  {tooltip.edName && tooltip.county && <span style={{ color: '#15803d' }}>|</span>}
+                  {tooltip.county && <span style={{ color: '#15803d', fontWeight: 400 }}>{tooltip.county}</span>}
+                  {(tooltip.edName || tooltip.county) && tooltip.saCode && <span style={{ color: '#9ca3af' }}>|</span>}
+                  {tooltip.saCode && <span style={{ color: '#9ca3af', fontWeight: 400, fontSize: 11 }}>SA: {tooltip.saCode}</span>}
                 </div>
               )}
+
+              {/* 2 — Always show all active metric rows with No + % */}
               {tooltip.rows.length > 0 && (
-                <>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-                    <thead>
-                      <tr>
-                        <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', paddingBottom: 2, fontWeight: 600, paddingRight: 8 }}>Metric (CSO 2022)</th>
-                        <th style={{ textAlign: 'right', borderBottom: '1px solid #e5e7eb', paddingBottom: 2, fontWeight: 600, paddingRight: 4 }}>No</th>
-                        <th style={{ textAlign: 'right', borderBottom: '1px solid #e5e7eb', paddingBottom: 2, fontWeight: 600 }}>%</th>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', paddingBottom: 2, fontWeight: 600, paddingRight: 8 }}>Metric (CSO 2022)</th>
+                      <th style={{ textAlign: 'right', borderBottom: '1px solid #e5e7eb', paddingBottom: 2, fontWeight: 600, paddingRight: 4 }}>No</th>
+                      <th style={{ textAlign: 'right', borderBottom: '1px solid #e5e7eb', paddingBottom: 2, fontWeight: 600 }}>%</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tooltip.rows.map((row, i) => (
+                      <tr key={i}>
+                        <td style={{ padding: '2px 8px 2px 0', borderBottom: '1px solid #f3f4f6', whiteSpace: 'nowrap' }}>{FILTER_ICONS[row.key] ? `${FILTER_ICONS[row.key]} ${row.label}` : row.label}</td>
+                        <td style={{ textAlign: 'right', borderBottom: '1px solid #f3f4f6', padding: '2px 4px' }}>{row.no}</td>
+                        <td style={{ textAlign: 'right', borderBottom: '1px solid #f3f4f6', padding: '2px 0' }}>{row.pct}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {tooltip.rows.map((row, i) => (
-                        <tr key={i}>
-                          <td style={{ padding: '2px 8px 2px 0', borderBottom: '1px solid #f3f4f6', whiteSpace: 'nowrap' }}>{FILTER_ICONS[row.key] ? `${FILTER_ICONS[row.key]} ${row.label}` : row.label}</td>
-                          <td style={{ textAlign: 'right', borderBottom: '1px solid #f3f4f6', padding: '2px 4px' }}>{row.no}</td>
-                          <td style={{ textAlign: 'right', borderBottom: '1px solid #f3f4f6', padding: '2px 0' }}>{row.pct}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+
+              {/* 3 — Combined Z-Score (multi-metric only) */}
+              {tooltip.combinedScore && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4, paddingTop: 4, borderTop: '1px solid #f3f4f6', fontSize: 11 }}>
+                  <span style={{ fontWeight: 700, color: '#b91c1c' }}>{tooltip.combinedScore.band}</span>
+                  <span style={{ color: '#9ca3af' }}>·</span>
+                  <span style={{ color: '#6b7280' }}>Z-Score: {tooltip.combinedScore.pct} / 100</span>
+                </div>
+              )}
+
+              {/* 4 — Index scores at bottom */}
+              {tooltip.indexRows && tooltip.indexRows.length > 0 && (
+                <div style={{ marginTop: 6, borderTop: '1px solid #e5e7eb', paddingTop: 5 }}>
+                  {tooltip.indexRows.map((row, i) => (
+                    <div key={i} style={{ marginBottom: i < tooltip.indexRows!.length - 1 ? 3 : 0 }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: i === 0 ? '#ea580c' : '#7c3aed', background: i === 0 ? '#fff7ed' : '#f5f3ff', borderRadius: 3, padding: '1px 6px', border: `1px solid ${i === 0 ? '#fed7aa' : '#ddd6fe'}`, whiteSpace: 'nowrap' }}>
+                        {i === 0 ? '♻️' : '🎯'} {row.label}: {row.value}
+                      </span>
+                    </div>
+                  ))}
+                </div>
               )}
             </>
           ) : (
@@ -1141,14 +1246,19 @@ export function MapView(props: MapViewProps) {
         )
       })()}
 
-      {/* Colour legend */}
+      {/* Single merged legend panel — bottom right */}
       {(() => {
         const COLOURS = ['#c0392b', '#e74c3c', '#f1948a', '#f9b8b1', '#fde8e6']
-        const saMetrics = activeMetrics.filter(m => m.geography === 'small_area')
+        const INDEX_COLOURS = ['#7f1d1d', '#c0392b', '#e74c3c', '#f1948a', '#fcc9c0']
+        const saMetrics    = activeMetrics.filter(m => m.geography === 'small_area')
+        const showIndex    = props.renewScoreVisible || props.commercialScoreVisible
+        const showIndexBands = showIndex && saMetrics.length === 0
+        const showComposite = saMetrics.length > 0
+        if (!showIndex && !showComposite) return null
         const isSingle = saMetrics.length === 1
         const isPobal  = isSingle && saMetrics[0].key === 'phobal_score'
 
-        // Compute actual value ranges for single metric
+        // Composite bands
         let rangeBands: { color: string; label: string }[] = []
         if (isSingle && !isPobal) {
           const key = saMetrics[0].key
@@ -1163,23 +1273,13 @@ export function MapView(props: MapViewProps) {
           }
           if (vals.length > 0) {
             vals.sort((a, b) => a - b)
-            const rawMin = vals[0]
-            const rawMax = vals[vals.length - 1]
+            const rawMin = vals[0]; const rawMax = vals[vals.length - 1]
             const max = Math.round(rawMax)
             const breakPts = [0, 0.2, 0.4, 0.6, 0.8].map(t => Math.round(rawMin + t * (rawMax - rawMin)))
-            const bands5 = Array.from({ length: 5 }, (_, i) => ({
-              lo: breakPts[i],
-              hi: i === 4 ? max : breakPts[i + 1] - 1,
-            }))
-            // Darkest = highest at top
-            rangeBands = COLOURS.map((color, i) => {
-              const b = bands5[4 - i]
-              const label = b.lo === b.hi ? `${b.lo}` : `${b.lo} – ${b.hi}`
-              return { color, label }
-            })
+            const bands5 = Array.from({ length: 5 }, (_, i) => ({ lo: breakPts[i], hi: i === 4 ? max : breakPts[i + 1] - 1 }))
+            rangeBands = COLOURS.map((color, i) => { const b = bands5[4 - i]; return { color, label: b.lo === b.hi ? `${b.lo}` : `${b.lo} – ${b.hi}` } })
           }
         }
-
         const pobalBands = [
           { color: '#7f1d1d', label: 'Very Affluent',      range: '+10 to +35' },
           { color: '#b91c1c', label: 'Above Average',      range: '0 to +10'   },
@@ -1187,55 +1287,83 @@ export function MapView(props: MapViewProps) {
           { color: '#fb7185', label: 'Disadvantaged',      range: '-20 to -10' },
           { color: '#fecdd3', label: 'Very Deprived',      range: '-35 to -20' },
         ]
-
         const multiLabels = [
-          { color: '#7f1d1d', label: 'High Potential'      },
-          { color: '#b91c1c', label: 'Above Average'       },
-          { color: '#ef4444', label: 'Average'             },
-          { color: '#fb7185', label: 'Slightly Below Avg'  },
-          { color: '#fecdd3', label: 'Below Average'       },
+          { color: '#7f1d1d', label: 'High Potential'  },
+          { color: '#b91c1c', label: 'Above Average'   },
+          { color: '#ef4444', label: 'Moderate'        },
+          { color: '#fb7185', label: 'Developing'      },
+          { color: '#fecdd3', label: 'Low Potential'   },
+        ]
+        const compositeTitle = isPobal ? 'Pobal HP Index' : isSingle ? (saMetrics[0].label ?? 'Legend') : 'Potential'
+        const compositeBands = isPobal ? pobalBands.map(b => ({ color: b.color, label: `${b.range}  ${b.label}` })) : isSingle && rangeBands.length > 0 ? rangeBands : multiLabels
+
+        const indexBands = [
+          { color: INDEX_COLOURS[0], label: '81 – 100', desc: 'Very High' },
+          { color: INDEX_COLOURS[1], label: '61 – 80',  desc: 'High'      },
+          { color: INDEX_COLOURS[2], label: '41 – 60',  desc: 'Medium'    },
+          { color: INDEX_COLOURS[3], label: '21 – 40',  desc: 'Low'       },
+          { color: INDEX_COLOURS[4], label: '0 – 20',   desc: 'Very Low'  },
         ]
 
-        const title = isPobal ? 'Pobal HP Index' : isSingle ? (saMetrics[0].label ?? 'Legend') : 'Potential Index'
-        const bands = isPobal ? pobalBands.map(b => ({ color: b.color, label: `${b.range}  ${b.label}` })) : isSingle && rangeBands.length > 0 ? rangeBands : multiLabels
-
         return (
-          <div style={{ position: 'absolute', bottom: 28, right: 8, zIndex: 10, background: 'rgba(255,255,255,0.95)', borderRadius: 6, boxShadow: '0 1px 4px rgba(0,0,0,0.18)', fontSize: 11, minWidth: 160, maxWidth: 220, userSelect: 'none' }}>
-            <div onClick={() => setLegendOpen(o => !o)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '5px 8px', cursor: 'pointer', fontWeight: 600, color: '#374151', borderBottom: legendOpen ? '1px solid #f3f4f6' : 'none' }}>
-              <span>{title}</span>
-              <span style={{ fontSize: 9, marginLeft: 8, color: '#9ca3af' }}>{legendOpen ? '▲' : '▼'}</span>
-            </div>
-            {legendOpen && (
-              <div style={{ padding: '6px 8px 8px' }}>
-                {bands.map(({ color, label }) => (
-                  <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-                    <div style={{ width: 14, height: 14, borderRadius: 2, background: color, flexShrink: 0, border: '1px solid rgba(0,0,0,0.08)' }} />
-                    <span style={{ color: '#374151' }}>{label}</span>
-                  </div>
-                ))}
-                <div style={{ marginTop: 5, borderTop: '1px solid #f3f4f6', paddingTop: 4 }}>
-                  {isSingle
-                    ? <span style={{ color: '#9ca3af', fontSize: 10 }}>CSO 2022</span>
-                    : (
-                      <div>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                          <span style={{ color: '#9ca3af', fontSize: 10 }}>Z-score · CSO 2022</span>
-                          <button
-                            onClick={e => { e.stopPropagation(); setLegendNoteOpen(o => !o) }}
-                            style={{ background: 'none', border: '1px solid #d1d5db', borderRadius: '50%', width: 14, height: 14, fontSize: 9, cursor: 'pointer', color: '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, flexShrink: 0 }}
-                            title="How is this calculated?"
-                          >*</button>
-                        </div>
-                        {legendNoteOpen && (
-                          <div style={{ marginTop: 6, fontSize: 10, color: '#6b7280', lineHeight: 1.5 }}>
-                            For each selected metric, every small area is scored 0–1 based on how it compares to the national average. These scores are then added and divided equally — so 3 metrics selected means each contributes one third. Darker red = higher combined potential.
-                          </div>
-                        )}
-                      </div>
-                    )
-                  }
+          <div style={{ position: 'absolute', bottom: 28, right: 8, zIndex: 10, background: 'rgba(255,255,255,0.95)', borderRadius: 6, boxShadow: '0 1px 4px rgba(0,0,0,0.18)', fontSize: 11, minWidth: 170, maxWidth: 230, userSelect: 'none' }}>
+
+            {/* ── Composite section ── */}
+            {showComposite && (
+              <>
+                <div onClick={() => setLegendOpen(o => !o)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '5px 8px', cursor: 'pointer', fontWeight: 600, color: '#374151', borderBottom: legendOpen ? '1px solid #f3f4f6' : 'none' }}>
+                  <span>{compositeTitle}</span>
+                  <span style={{ fontSize: 9, marginLeft: 8, color: '#9ca3af' }}>{legendOpen ? '▲' : '▼'}</span>
                 </div>
-              </div>
+                {legendOpen && (
+                  <div style={{ padding: '6px 8px 8px' }}>
+                    {compositeBands.map(({ color, label }) => (
+                      <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                        <div style={{ width: 14, height: 14, borderRadius: 2, background: color, flexShrink: 0, border: '1px solid rgba(0,0,0,0.08)' }} />
+                        <span style={{ color: '#374151' }}>{label}</span>
+                      </div>
+                    ))}
+                    <div style={{ marginTop: 5, borderTop: '1px solid #f3f4f6', paddingTop: 4 }}>
+                      {isSingle ? <span style={{ color: '#9ca3af', fontSize: 10 }}>CSO 2022</span> : (
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <span style={{ color: '#9ca3af', fontSize: 10 }}>Z-score · CSO 2022</span>
+                            <button onClick={e => { e.stopPropagation(); setLegendNoteOpen(o => !o) }} style={{ background: 'none', border: '1px solid #d1d5db', borderRadius: '50%', width: 14, height: 14, fontSize: 9, cursor: 'pointer', color: '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, flexShrink: 0 }} title="How is this calculated?">*</button>
+                          </div>
+                          {legendNoteOpen && (
+                            <div style={{ marginTop: 6, fontSize: 10, color: '#6b7280', lineHeight: 1.5 }}>
+                              For each selected metric, every small area is scored 0–1 based on how it compares to the national average. Scores are averaged equally. Darker red = higher combined potential.
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* ── Index section ── */}
+            {showIndex && (
+              <>
+                <div style={{ padding: '5px 8px 4px', borderTop: showComposite ? '2px solid #e5e7eb' : 'none', borderBottom: showIndexBands ? '1px solid #f3f4f6' : 'none' }}>
+                  {props.renewScoreVisible && <div style={{ fontWeight: 700, color: '#ea580c', fontSize: 11, marginBottom: props.commercialScoreVisible ? 2 : 0 }}>♻️ RENEW Potential Score</div>}
+                  {props.commercialScoreVisible && <div style={{ fontWeight: 700, color: '#7c3aed', fontSize: 11 }}>🎯 Commercial Readiness</div>}
+                  {!showIndexBands && <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>Shown in tooltip · score / 100</div>}
+                </div>
+                {showIndexBands && (
+                  <div style={{ padding: '5px 8px 6px' }}>
+                    {indexBands.map(({ color, label, desc }) => (
+                      <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                        <div style={{ width: 14, height: 14, borderRadius: 2, background: color, flexShrink: 0, border: '1px solid rgba(0,0,0,0.08)' }} />
+                        <span style={{ color: '#374151', fontWeight: 500 }}>{label}</span>
+                        <span style={{ color: '#9ca3af', marginLeft: 'auto' }}>{desc}</span>
+                      </div>
+                    ))}
+                    <div style={{ marginTop: 4, borderTop: '1px solid #f3f4f6', paddingTop: 3, fontSize: 10, color: '#9ca3af' }}>Score / 100 · independent layer</div>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )

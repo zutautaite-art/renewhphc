@@ -65,6 +65,8 @@ export default function App() {
   const [clearPinsSignal, setClearPinsSignal] = useState(0)
   const [sessionOnlyPinsSignal, setSessionOnlyPinsSignal] = useState(0)
   const [pinsWarning, setPinsWarning] = useState(false)
+  const [renewScoreOn, setRenewScoreOn] = useState(false)
+  const [commercialScoreOn, setCommercialScoreOn] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [pobalInfoOpen, setPobalInfoOpen] = useState(false)
@@ -290,6 +292,8 @@ export default function App() {
                     const next: MetricToggleState = {}
                     for (const row of metricFilters) next[row.key] = true
                     setActiveMetricKeys(next)
+                    setRenewScoreOn(true)
+                    setCommercialScoreOn(true)
                   }}
                 >
                   Load All
@@ -301,6 +305,8 @@ export default function App() {
                     const next: MetricToggleState = {}
                     for (const row of metricFilters) next[row.key] = false
                     setActiveMetricKeys(next)
+                    setRenewScoreOn(false)
+                    setCommercialScoreOn(false)
                   }}
                 >
                   Clear All
@@ -346,7 +352,7 @@ export default function App() {
                         onDataOnChange={(on) => setMetric(f.key, on)}
                         dataAvailable={metricAvailable(f.key)}
                       >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingLeft: 8 }}>
                           <strong>{f.label}</strong>
                           {f.key === 'phobal_score' && (
                             <button
@@ -368,6 +374,38 @@ export default function App() {
                 </FilterSection>
               </Fragment>
             ))}
+
+            {/* ── Area Potential Indexes ── completely independent of z-score ── */}
+            <FilterSection
+              sectionId="area-potential-indexes"
+              titleBold="Area Potential Indexes:"
+              titleRest="Composite scores out of 100. Shown as independent layers — not included in metric colour calculation."
+            >
+              <MeasureRow
+                switchId="renew-score"
+                dataOn={renewScoreOn}
+                onDataOnChange={(on) => {
+                  setRenewScoreOn(on)
+                  // Exclusive only when no regular metrics active
+                  if (on && !Object.values(activeMetricKeys).some(Boolean)) setCommercialScoreOn(false)
+                }}
+                dataAvailable={filtersReady}
+              >
+                <strong>♻️ RENEW Potential Score</strong>
+              </MeasureRow>
+              <MeasureRow
+                switchId="commercial-score"
+                dataOn={commercialScoreOn}
+                onDataOnChange={(on) => {
+                  setCommercialScoreOn(on)
+                  // Exclusive only when no regular metrics active
+                  if (on && !Object.values(activeMetricKeys).some(Boolean)) setRenewScoreOn(false)
+                }}
+                dataAvailable={filtersReady}
+              >
+                <strong>🎯 Commercial Readiness Score</strong>
+              </MeasureRow>
+            </FilterSection>
 
             <InformationTable
               activeMetrics={activeMetrics.map((m) => ({ key: m.key, label: m.label, geography: m.geography, loadedAreas: Object.keys(m.values).length, unit: m.unit }))}
@@ -452,6 +490,8 @@ export default function App() {
           boundarySmallAreaLinesVisible={boundarySmallAreaLinesOn}
           evCommercial={loadedData?.evCommercial ?? []}
           evCommercialLayerVisible={evCommercialLayerOn}
+          renewScoreVisible={renewScoreOn}
+          commercialScoreVisible={commercialScoreOn}
           towns={towns.map(t => {
             const la = t.localAuthority ?? ''
             const toTitle = (s: string) => s.toLowerCase().replace(/(?:^|[-\s])\w/g, c => c.toUpperCase())
