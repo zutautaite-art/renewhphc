@@ -68,13 +68,15 @@ export default function App() {
   const [geoJsonReady, setGeoJsonReady] = useState(false)
   const [statsReadyAt, setStatsReadyAt] = useState(0)
   const [clearPinsSignal, setClearPinsSignal] = useState(0)
+  const [sessionOnlyPinsSignal, setSessionOnlyPinsSignal] = useState(0)
+  const [pinsWarning, setPinsWarning] = useState(false)
   const [renewScoreOn, setRenewScoreOn] = useState(false)
   const [commercialScoreOn, setCommercialScoreOn] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [pobalInfoOpen, setPobalInfoOpen] = useState(false)
 
-  // ── Restore from IndexedDB on mount (same browser / device until next upload) ──
+  // ── Restore workbook from IndexedDB on mount ────────────────────────────────
   useEffect(() => {
     loadWorkbook().then((stored) => {
       if (!stored) return
@@ -178,19 +180,20 @@ export default function App() {
       const buffer = await file.arrayBuffer()
       const wb = XLSX.read(buffer, { type: 'array' })
       const parsed = parseWorkbookData(wb)
-      // New workbook replaces the previous one; clear manual dropped pins only
-      setClearPinsSignal((n) => n + 1)
       setLoadedData(parsed)
       setImportSummary(parsed.importSummary)
       setUploadDetailLines(parsed.warnings)
+      setUploadError(null)
       setLoadedFileName(file.name)
+      // Manual dropped pins: clear IndexedDB for next reload; UI pins unchanged this session
+      setSessionOnlyPinsSignal((n) => n + 1)
+      setPinsWarning(true)
       try {
         await saveWorkbook(file.name, buffer)
         void tryPersistBrowserStorage()
-        setUploadError(null)
       } catch (e) {
         setUploadError(
-          `Workbook loaded for this session only — not saved in the browser: ${describeIndexedDbError(e)}. Customer dots will disappear after reload until storage works.`,
+          `Workbook loaded for this session only — not saved in the browser: ${describeIndexedDbError(e)}. Dots from the file will disappear after reload until storage works.`,
         )
       }
     } catch (err) {
@@ -237,7 +240,7 @@ export default function App() {
     <div className="appShell">
       <header className="topBar">
         <div>
-          <div className="brandTitle">RENEW Potential</div>
+          <div className="brandTitle">RENEW HPHC</div>
           <div className="brandSubtitle">High-Potential Households and Communities for Participation in Sustainable Energy Community</div>
         </div>
       </header>
@@ -433,8 +436,8 @@ export default function App() {
                 <div className="panelHeader">Upload</div>
                 <div className="uploadFooterMeta">
                   {loadedFileName
-                    ? <>Loaded: <strong>{loadedFileName}</strong> — data and dropped pins stay until you upload a new file (or clear pins).</>
-                    : 'Drop or click to load a data file. Workbook and pins persist across page reloads.'}
+                    ? <>Loaded: <strong>{loadedFileName}</strong> — stays until a new file is uploaded.</>
+                    : 'Drop or click to load a data file. Persists across page reloads.'}
                 </div>
               </div>
               <div
@@ -464,9 +467,14 @@ export default function App() {
                 style={{ display: 'none' }}
                 onChange={handleUploadChange}
               />
+              {pinsWarning && (
+                <div style={{ marginTop: 8, fontSize: 11, color: '#92400e', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 4, padding: '6px 8px', lineHeight: 1.5 }}>
+                  ⚠️ Pins are session-only — they will be lost when you close this page. Download them before closing.
+                </div>
+              )}
               <button
                 type="button"
-                onClick={() => { setClearPinsSignal(n => n + 1) }}
+                onClick={() => { setClearPinsSignal(n => n + 1); setPinsWarning(false) }}
                 style={{ marginTop: 8, width: '100%', padding: '6px 0', fontSize: 11, color: '#9ca3af', background: 'transparent', border: '1px solid #e5e7eb', borderRadius: 4, cursor: 'pointer' }}
               >
                 Clear pins
@@ -487,6 +495,7 @@ export default function App() {
           onGeoJsonReady={() => setGeoJsonReady(true)}
           onStatsReady={() => setStatsReadyAt(Date.now())}
           clearPinsSignal={clearPinsSignal}
+          sessionOnlyPinsSignal={sessionOnlyPinsSignal}
           activeMetrics={activeMetrics}
           households={households}
           householdsLayerVisible={householdsLayerOn}
