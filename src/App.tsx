@@ -14,6 +14,7 @@ import { fetchCsoCountyAndBuaGeoJson } from './cso/boundaryData'
 import type { LocalAuthorityRow } from './cso/geohivePlaces'
 import { linkBuaToLocalAuthorities, type LinkedTownOption } from './buaLaLink'
 import { parseWorkbookData, type ParsedWorkbookData, type FilterConfigRow } from './workbookData'
+import { fetchSharedWorkbookBuffer, uploadSharedWorkbook } from './workbookBlob'
 
 const EMPTY_FC: FeatureCollection = { type: 'FeatureCollection', features: [] }
 type MetricToggleState = Record<string, boolean>
@@ -71,22 +72,47 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false)
   const [pobalInfoOpen, setPobalInfoOpen] = useState(false)
 
-  // ── Restore from IndexedDB on mount ────────────────────────────────────────
+  // ── Restore workbook: Vercel Blob first (all devices), else IndexedDB (this browser) ──
   useEffect(() => {
-    loadWorkbook().then((stored) => {
-      if (!stored) return
-      try {
-        const wb     = XLSX.read(stored.buffer, { type: 'array' })
-        const parsed = parseWorkbookData(wb)
-        setLoadedData(parsed)
-        setImportSummary(parsed.importSummary)
-        setUploadDetailLines(parsed.warnings)
-        setUploadError(null)
-        setLoadedFileName(stored.name)
-      } catch (err) {
-        console.warn('IndexedDB restore failed:', err)
+    let cancelled = false
+    void (async () => {
+      const remoteBuf = await fetchSharedWorkbookBuffer()
+      if (cancelled) return
+      if (remoteBuf) {
+        try {
+          const wb = XLSX.read(remoteBuf, { type: 'array' })
+          const parsed = parseWorkbookData(wb)
+          setLoadedData(parsed)
+          setImportSummary(parsed.importSummary)
+          setUploadDetailLines(parsed.warnings)
+          setUploadError(null)
+          setLoadedFileName('Shared workbook (cloud)')
+          saveWorkbook('shared-from-cloud.xlsx', remoteBuf).catch(() => {})
+          return
+        } catch (err) {
+          console.warn('Cloud workbook parse failed:', err)
+        }
       }
-    }).catch(() => { /* ignore */ })
+      loadWorkbook()
+        .then((stored) => {
+          if (cancelled || !stored) return
+          try {
+            const wb = XLSX.read(stored.buffer, { type: 'array' })
+            const parsed = parseWorkbookData(wb)
+            setLoadedData(parsed)
+            setImportSummary(parsed.importSummary)
+            setUploadDetailLines(parsed.warnings)
+            setUploadError(null)
+            setLoadedFileName(stored.name)
+          } catch (err) {
+            console.warn('IndexedDB restore failed:', err)
+          }
+        })
+        .catch(() => {})
+    })()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {
@@ -170,18 +196,24 @@ export default function App() {
   async function handleWorkbook(file: File) {
     try {
       const buffer = await file.arrayBuffer()
-      const wb     = XLSX.read(buffer, { type: 'array' })
+      const wb = XLSX.read(buffer, { type: 'array' })
       const parsed = parseWorkbookData(wb)
+      const detail = [...parsed.warnings]
       setLoadedData(parsed)
       setImportSummary(parsed.importSummary)
-      setUploadDetailLines(parsed.warnings)
       setUploadError(null)
       setLoadedFileName(file.name)
       // Wipe pins from IndexedDB — they survive this session but won't restore on reload
-      setSessionOnlyPinsSignal(n => n + 1)
+      setSessionOnlyPinsSignal((n) => n + 1)
       setPinsWarning(true)
-      // Save raw bytes to IndexedDB — restored on next page load
       saveWorkbook(file.name, buffer).catch((e) => console.warn('IndexedDB save failed:', e))
+      const blobResult = await uploadSharedWorkbook(file)
+      if (!blobResult.ok) {
+        detail.push(
+          `Cloud copy (other phones/PCs): ${blobResult.message}. This device still has the file locally.`,
+        )
+      }
+      setUploadDetailLines(detail)
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Failed to read workbook')
     }
