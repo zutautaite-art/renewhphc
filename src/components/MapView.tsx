@@ -1037,7 +1037,7 @@ export function MapView(props: MapViewProps) {
       {tooltip && (
         <div
           className="mapHoverTooltip"
-          style={{ left: tooltip.x, top: tooltip.y, maxWidth: 'min(320px, calc(100vw - 24px))', pointerEvents: 'none' }}
+          style={{ left: tooltip.x, top: tooltip.y, maxWidth: 'min(260px, calc(100vw - 24px))', fontSize: 11, wordBreak: 'break-word', pointerEvents: 'none' }}
         >
           {tooltip.rows.length > 0 || tooltip.county || (tooltip.indexRows && tooltip.indexRows.length > 0) ? (
             <>
@@ -1347,8 +1347,6 @@ export function MapView(props: MapViewProps) {
             {showIndex && (
               <>
                 <div style={{ padding: '5px 8px 4px', borderTop: showComposite ? '2px solid #e5e7eb' : 'none', borderBottom: showIndexBands ? '1px solid #f3f4f6' : 'none' }}>
-                  {props.renewScoreVisible && <div style={{ fontWeight: 700, color: '#ea580c', fontSize: 11, marginBottom: props.commercialScoreVisible ? 2 : 0 }}>♻️ RENEW Potential Score</div>}
-                  {props.commercialScoreVisible && <div style={{ fontWeight: 700, color: '#7c3aed', fontSize: 11 }}>🎯 Commercial Readiness</div>}
                 </div>
                 {showIndexBands && (
                   <div style={{ padding: '5px 8px 6px' }}>
