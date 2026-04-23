@@ -21,64 +21,40 @@ export async function fetchRemoteWorkbookMeta(): Promise<RemoteWorkbookMeta | nu
   try {
     const metaRes = await fetch('/api/workbook-remote')
     if (!metaRes.ok) return null
-    const ct = metaRes.headers.get('content-type') ?? ''
-    if (!ct.includes('application/json')) return null
     return (await metaRes.json()) as RemoteWorkbookMeta
   } catch {
     return null
   }
 }
 
-/**
- * Download workbook bytes. Tries server proxy first (works when the store/blob is
- * **private** or the public URL fails in the browser), then the public `meta.url` CDN
- * (better for very large files; avoids serverless response size limits on small plans).
- */
+/** Download workbook bytes when the API reports a `url`. */
 export async function fetchBufferFromRemoteMeta(meta: RemoteWorkbookMeta): Promise<ArrayBuffer | null> {
-  if (!meta.blobConfigured || meta.noFileYet) return null
-
+  if (!meta.url) return null
   try {
-    const proxy = await fetch('/api/workbook-download')
-    if (proxy.ok) {
-      const buf = await proxy.arrayBuffer()
-      if (buf.byteLength > 0) return buf
-    }
+    const fileRes = await fetch(meta.url)
+    if (!fileRes.ok) return null
+    return await fileRes.arrayBuffer()
   } catch {
-    /* fall through */
+    return null
   }
-
-  if (meta.url) {
-    try {
-      const fileRes = await fetch(meta.url)
-      if (fileRes.ok) return await fileRes.arrayBuffer()
-    } catch {
-      /* ignore */
-    }
-  }
-  return null
 }
 
 /** Upload the file to Vercel Blob (same object for every device). */
 export async function uploadSharedWorkbook(file: File): Promise<{ ok: true } | { ok: false; message: string }> {
-  const common = {
-    handleUploadUrl: handleBlobUploadUrl(),
-    multipart: file.size > 4 * 1024 * 1024,
-    contentType:
-      file.type ||
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  } as const
-
-  let lastErr: unknown
-  for (const access of ['public', 'private'] as const) {
-    try {
-      await upload(SHARED_WORKBOOK_PATH, file, { ...common, access })
-      return { ok: true }
-    } catch (e) {
-      lastErr = e
-    }
+  try {
+    await upload(SHARED_WORKBOOK_PATH, file, {
+      access: 'public',
+      handleUploadUrl: handleBlobUploadUrl(),
+      multipart: file.size > 4 * 1024 * 1024,
+      contentType:
+        file.type ||
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    return { ok: true }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Blob upload failed'
+    return { ok: false, message }
   }
-  const message = lastErr instanceof Error ? lastErr.message : 'Blob upload failed'
-  return { ok: false, message }
 }
 
 /** Convenience: meta + download in one call (two round-trips). */
