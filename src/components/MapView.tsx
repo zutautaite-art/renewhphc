@@ -1349,7 +1349,6 @@ export function MapView(props: MapViewProps) {
                 <div style={{ padding: '5px 8px 4px', borderTop: showComposite ? '2px solid #e5e7eb' : 'none', borderBottom: showIndexBands ? '1px solid #f3f4f6' : 'none' }}>
                   {props.renewScoreVisible && <div style={{ fontWeight: 700, color: '#ea580c', fontSize: 11, marginBottom: props.commercialScoreVisible ? 2 : 0 }}>♻️ RENEW Potential Score</div>}
                   {props.commercialScoreVisible && <div style={{ fontWeight: 700, color: '#7c3aed', fontSize: 11 }}>🎯 Commercial Readiness</div>}
-                  {!showIndexBands && <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>Shown in tooltip · score / 100</div>}
                 </div>
                 {showIndexBands && (
                   <div style={{ padding: '5px 8px 6px' }}>

@@ -71,20 +71,40 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false)
   const [pobalInfoOpen, setPobalInfoOpen] = useState(false)
 
-  // ── Restore from IndexedDB on mount ────────────────────────────────────────
+  // ── Restore from IndexedDB on mount, fallback to Vercel Blob ──────────────
   useEffect(() => {
-    loadWorkbook().then((stored) => {
-      if (!stored) return
-      try {
-        const wb     = XLSX.read(stored.buffer, { type: 'array' })
-        const parsed = parseWorkbookData(wb)
-        setLoadedData(parsed)
-        setImportSummary(parsed.importSummary)
-        setUploadDetailLines(parsed.warnings)
-        setUploadError(null)
-        setLoadedFileName(stored.name)
-      } catch (err) {
-        console.warn('IndexedDB restore failed:', err)
+    loadWorkbook().then(async (stored) => {
+      if (stored) {
+        try {
+          const wb     = XLSX.read(stored.buffer, { type: 'array' })
+          const parsed = parseWorkbookData(wb)
+          setLoadedData(parsed)
+          setImportSummary(parsed.importSummary)
+          setUploadDetailLines(parsed.warnings)
+          setUploadError(null)
+          setLoadedFileName(stored.name)
+        } catch (err) {
+          console.warn('IndexedDB restore failed:', err)
+        }
+      } else {
+        try {
+          const res  = await fetch('/api/workbook')
+          if (!res.ok) return
+          const { url, name } = await res.json() as { url: string; name: string }
+          const fileRes  = await fetch(url)
+          if (!fileRes.ok) return
+          const buffer   = await fileRes.arrayBuffer()
+          const wb       = XLSX.read(buffer, { type: 'array' })
+          const parsed   = parseWorkbookData(wb)
+          setLoadedData(parsed)
+          setImportSummary(parsed.importSummary)
+          setUploadDetailLines(parsed.warnings)
+          setUploadError(null)
+          setLoadedFileName(name ?? 'cloud-workbook.xlsx')
+          saveWorkbook(name ?? 'cloud-workbook.xlsx', buffer).catch(() => {})
+        } catch (err) {
+          console.warn('Blob restore failed:', err)
+        }
       }
     }).catch(() => { /* ignore */ })
   }, [])
@@ -177,11 +197,14 @@ export default function App() {
       setUploadDetailLines(parsed.warnings)
       setUploadError(null)
       setLoadedFileName(file.name)
-      // Wipe pins from IndexedDB — they survive this session but won't restore on reload
       setSessionOnlyPinsSignal(n => n + 1)
       setPinsWarning(true)
-      // Save raw bytes to IndexedDB — restored on next page load
       saveWorkbook(file.name, buffer).catch((e) => console.warn('IndexedDB save failed:', e))
+      fetch('/api/upload', {
+        method: 'POST',
+        headers: { 'x-filename': file.name, 'Content-Type': 'application/octet-stream' },
+        body: buffer,
+      }).catch((e) => console.warn('Blob upload failed:', e))
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Failed to read workbook')
     }
