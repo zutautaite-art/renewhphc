@@ -54,10 +54,8 @@ export type MapViewProps = {
   /** After embedded-metric stats are ready; parent can bump deps so `activeMetrics` re-evaluates. */
   onStatsReady?: () => void
   towns?: PinTownOption[]
-  /** Increment to trigger a full pin clear (called on manual clear). */
+  /** Increment to trigger a full pin clear (IndexedDB + map; e.g. new workbook upload or Clear pins). */
   clearPinsSignal?: number
-  /** Increment to wipe pins from IndexedDB only — pins survive this session but not next reload. */
-  sessionOnlyPinsSignal?: number
   /** Show RENEW Potential Score as an independent fill layer (never affects z-score). */
   renewScoreVisible?: boolean
   /** Show Commercial Readiness Score as an independent fill layer (never affects z-score). */
@@ -444,21 +442,6 @@ export function MapView(props: MapViewProps) {
     setDroppedPins([])
     clearAllPinsFromDb().catch(() => {})
   }, [props.clearPinsSignal])
-
-  // On new Excel upload: wipe pins from IndexedDB only — pins stay visible this session
-  // but won't restore if page is reloaded
-  useEffect(() => {
-    if (!props.sessionOnlyPinsSignal) return
-    clearAllPinsFromDb().catch(() => {})
-  }, [props.sessionOnlyPinsSignal])
-
-  useEffect(() => {
-    const handler = (e: BeforeUnloadEvent) => {
-      if (droppedPinsRef.current.length > 0) { e.preventDefault(); e.returnValue = '' }
-    }
-    window.addEventListener('beforeunload', handler)
-    return () => window.removeEventListener('beforeunload', handler)
-  }, [])
 
   useEffect(() => {
     const map = mapRef.current
