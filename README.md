@@ -120,6 +120,14 @@ This is done in the **Vercel dashboard** (not in Git). The app already includes 
 
 After Blob works: **one upload** replaces `renewhphc/workbook.xlsx`; every device that opens the **same deployment URL** loads that file on startup (and still caches a copy in IndexedDB for faster reloads on that device).
 
+### Troubleshooting “linked Blob but file won’t load”
+
+1. **Redeploy** after linking storage so `api/*` serverless functions receive `BLOB_READ_WRITE_TOKEN`.  
+2. In the browser (live site), open **`/api/workbook-remote`** — expect JSON with `"blobConfigured": true`. After an upload, `"url"` should be non-null.  
+3. **`/api/workbook-download`** — returns the workbook bytes using the server token (needed when blobs are **private** or the public CDN URL fails in the browser). Very large workbooks may hit **serverless response size limits** on small plans; in that case the app falls back to loading via the public `url` when it works.  
+4. **Project root** — Vercel’s **Root Directory** must be the repo root so the **`api/`** folder is included in the deployment.  
+5. **`/api/*` returns HTML** — the SPA rewrite may be wrong or the deployment is missing `api/`; confirm the latest Git commit is deployed.
+
 ---
 
 ## Deployment
