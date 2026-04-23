@@ -1037,7 +1037,7 @@ export function MapView(props: MapViewProps) {
       {tooltip && (
         <div
           className="mapHoverTooltip"
-          style={{ left: tooltip.x, top: tooltip.y, maxWidth: 'min(260px, calc(100vw - 24px))', fontSize: 11, wordBreak: 'break-word', pointerEvents: 'none' }}
+          style={{ position: 'absolute', left: Math.min(tooltip.x, window.innerWidth - 320 - 8), top: tooltip.y, maxWidth: 'min(320px, calc(100vw - 16px))', fontSize: 11, wordBreak: 'break-word', pointerEvents: 'none' }}
         >
           {tooltip.rows.length > 0 || tooltip.county || (tooltip.indexRows && tooltip.indexRows.length > 0) ? (
             <>
@@ -1057,17 +1057,17 @@ export function MapView(props: MapViewProps) {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                   <thead>
                     <tr>
-                      <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', paddingBottom: 2, fontWeight: 600, paddingRight: 8 }}>Metric (CSO 2022)</th>
-                      <th style={{ textAlign: 'right', borderBottom: '1px solid #e5e7eb', paddingBottom: 2, fontWeight: 600, paddingRight: 4 }}>No</th>
-                      <th style={{ textAlign: 'right', borderBottom: '1px solid #e5e7eb', paddingBottom: 2, fontWeight: 600 }}>%</th>
+                      <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', paddingBottom: 2, fontWeight: 600, paddingRight: 8, flex: 1, minWidth: 0 }}>Metric (CSO 2022)</th>
+                      <th style={{ textAlign: 'right', borderBottom: '1px solid #e5e7eb', paddingBottom: 2, fontWeight: 600, paddingRight: 4, width: 36, flexShrink: 0, whiteSpace: 'nowrap' }}>No</th>
+                      <th style={{ textAlign: 'right', borderBottom: '1px solid #e5e7eb', paddingBottom: 2, fontWeight: 600, width: 48, flexShrink: 0, whiteSpace: 'nowrap' }}>%</th>
                     </tr>
                   </thead>
                   <tbody>
                     {tooltip.rows.map((row, i) => (
                       <tr key={i}>
-                        <td style={{ padding: '2px 8px 2px 0', borderBottom: '1px solid #f3f4f6', whiteSpace: 'nowrap' }}>{FILTER_ICONS[row.key] ? `${FILTER_ICONS[row.key]} ${row.label}` : row.label}</td>
-                        <td style={{ textAlign: 'right', borderBottom: '1px solid #f3f4f6', padding: '2px 4px' }}>{row.no}</td>
-                        <td style={{ textAlign: 'right', borderBottom: '1px solid #f3f4f6', padding: '2px 0' }}>{row.pct}</td>
+                        <td style={{ padding: '2px 8px 2px 0', borderBottom: '1px solid #f3f4f6', flex: 1, minWidth: 0 }}>{FILTER_ICONS[row.key] ? `${FILTER_ICONS[row.key]} ${row.label}` : row.label}</td>
+                        <td style={{ textAlign: 'right', borderBottom: '1px solid #f3f4f6', padding: '2px 4px', width: 36, flexShrink: 0, whiteSpace: 'nowrap' }}>{row.no}</td>
+                        <td style={{ textAlign: 'right', borderBottom: '1px solid #f3f4f6', padding: '2px 0', width: 48, flexShrink: 0, whiteSpace: 'nowrap' }}>{row.pct}</td>
                       </tr>
                     ))}
                   </tbody>
