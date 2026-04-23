@@ -90,10 +90,8 @@ export default function App() {
         try {
           const res  = await fetch('/api/workbook')
           if (!res.ok) return
-          const { url, name } = await res.json() as { url: string; name: string }
-          const fileRes  = await fetch(url)
-          if (!fileRes.ok) return
-          const buffer   = await fileRes.arrayBuffer()
+          const buffer = await res.arrayBuffer()
+          const name = res.headers.get('content-disposition')?.split('filename="')[1]?.replace('"','') ?? 'workbook.xlsx'
           const wb       = XLSX.read(buffer, { type: 'array' })
           const parsed   = parseWorkbookData(wb)
           setLoadedData(parsed)

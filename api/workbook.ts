@@ -12,9 +12,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime()
     )[0]
 
-    return res.status(200).json({ url: latest.url, name: latest.pathname.split('/').pop() })
+    const response = await fetch(latest.url, {
+      headers: { Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}` },
+    })
+    if (!response.ok) return res.status(500).json({ error: 'Failed to fetch from blob' })
+
+    const buffer = await response.arrayBuffer()
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename="${latest.pathname.split('/').pop()}"`)
+    res.setHeader('Cache-Control', 'no-store')
+    return res.status(200).send(Buffer.from(buffer))
   } catch (err) {
-    console.error('Blob list error:', err)
+    console.error('Blob fetch error:', err)
     return res.status(500).json({ error: 'Failed to get workbook' })
   }
 }
