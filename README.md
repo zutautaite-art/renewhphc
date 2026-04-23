@@ -122,12 +122,11 @@ After Blob works: **one upload** replaces `renewhphc/workbook.xlsx`; every devic
 
 ### Troubleshooting “linked Blob but file won’t load”
 
-1. On the **live** site, scroll the sidebar to **Upload** → **Run Blob / API diagnostics**. That calls **`GET /api/blob-troubleshoot`** and prints JSON: token present, `head` status, whether the server can read the first byte of the blob, and short hints (no secrets).  
-2. Or open these URLs directly in the browser: **`/api/blob-troubleshoot`**, **`/api/workbook-remote`**, **`/api/workbook-download`** (download returns a file only after an upload).  
-3. **Redeploy** after linking storage so `api/*` functions receive `BLOB_READ_WRITE_TOKEN`.  
-4. **Project root** — Vercel **Root Directory** must be the repo root so **`api/`** is deployed.  
-5. **HTML instead of JSON** on `/api/*` — wrong root, wrong project, or old deploy without `api/` routes.  
-6. Very large workbooks may hit **serverless response size limits** on **`/api/workbook-download`**; the client then falls back to the public blob `url` when possible.
+1. **Redeploy** after linking storage so `api/*` serverless functions receive `BLOB_READ_WRITE_TOKEN`.  
+2. In the browser (live site), open **`/api/workbook-remote`** — expect JSON with `"blobConfigured": true`. After an upload, `"url"` should be non-null.  
+3. **`/api/workbook-download`** — returns the workbook bytes using the server token (needed when blobs are **private** or the public CDN URL fails in the browser). Very large workbooks may hit **serverless response size limits** on small plans; in that case the app falls back to loading via the public `url` when it works.  
+4. **Project root** — Vercel’s **Root Directory** must be the repo root so the **`api/`** folder is included in the deployment.  
+5. **`/api/*` returns HTML** — the SPA rewrite may be wrong or the deployment is missing `api/`; confirm the latest Git commit is deployed.
 
 ---
 

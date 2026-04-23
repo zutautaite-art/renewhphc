@@ -83,8 +83,6 @@ export default function App() {
   const [pobalInfoOpen, setPobalInfoOpen] = useState(false)
   /** Explains Blob vs IndexedDB; set from `/api/workbook-remote` on load. */
   const [blobSetupHint, setBlobSetupHint] = useState<string | null>(null)
-  const [blobDiagLoading, setBlobDiagLoading] = useState(false)
-  const [blobDiagText, setBlobDiagText] = useState<string | null>(null)
 
   // ── Restore workbook: Vercel Blob first (all devices), else IndexedDB (this browser) ──
   useEffect(() => {
@@ -234,30 +232,6 @@ export default function App() {
 
   function setMetric(key: string, on: boolean) {
     setActiveMetricKeys((prev) => ({ ...prev, [key]: on }))
-  }
-
-  async function runBlobDiagnostics() {
-    setBlobDiagLoading(true)
-    setBlobDiagText(null)
-    try {
-      const r = await fetch('/api/blob-troubleshoot')
-      const raw = await r.text()
-      let formatted = raw
-      try {
-        formatted = JSON.stringify(JSON.parse(raw), null, 2)
-      } catch {
-        /* not JSON — show raw (e.g. HTML error page) */
-      }
-      setBlobDiagText(`${r.status} ${r.statusText}\n\n${formatted}`)
-    } catch (e) {
-      setBlobDiagText(
-        e instanceof Error
-          ? e.message
-          : 'Request failed. On localhost use your Vercel URL or `vercel dev` so `/api/*` exists.',
-      )
-    } finally {
-      setBlobDiagLoading(false)
-    }
   }
 
   async function handleWorkbook(file: File) {
@@ -582,45 +556,6 @@ export default function App() {
               >
                 Clear pins
               </button>
-              <button
-                type="button"
-                onClick={() => void runBlobDiagnostics()}
-                disabled={blobDiagLoading}
-                style={{
-                  marginTop: 8,
-                  width: '100%',
-                  padding: '6px 0',
-                  fontSize: 11,
-                  color: '#374151',
-                  background: '#f3f4f6',
-                  border: '1px solid #d1d5db',
-                  borderRadius: 4,
-                  cursor: blobDiagLoading ? 'wait' : 'pointer',
-                  opacity: blobDiagLoading ? 0.7 : 1,
-                }}
-              >
-                {blobDiagLoading ? 'Running…' : 'Run Blob / API diagnostics'}
-              </button>
-              {blobDiagText ? (
-                <pre
-                  style={{
-                    marginTop: 8,
-                    maxHeight: 220,
-                    overflow: 'auto',
-                    fontSize: 10,
-                    lineHeight: 1.35,
-                    textAlign: 'left',
-                    background: '#111827',
-                    color: '#e5e7eb',
-                    padding: 8,
-                    borderRadius: 4,
-                    whiteSpace: 'pre-wrap',
-                    wordBreak: 'break-word',
-                  }}
-                >
-                  {blobDiagText}
-                </pre>
-              ) : null}
             </div>
           </div>
         </aside>
