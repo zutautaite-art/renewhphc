@@ -8,12 +8,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' })
   }
-  if (!process.env.BLOB_READ_WRITE_TOKEN?.trim()) {
-    return res.status(503).json({
-      error:
-        'Vercel Blob is not configured. In Vercel: Project → Storage → Create / Connect Blob store, then redeploy so BLOB_READ_WRITE_TOKEN is available.',
-    })
-  }
   try {
     const body = req.body as HandleUploadBody
     const jsonResponse = await handleUpload({
